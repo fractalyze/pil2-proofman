@@ -136,6 +136,11 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
     TimerStopAndLog(STARK_STEP_0);
 
     TimerStart(STARK_STEP_1);
+    if (setupCtx.starkInfo.mapSectionsN.count("cm1")) {
+        pil2DumpU64(dumpPrefix + "trace", params.trace,
+                    setupCtx.starkInfo.mapSectionsN["cm1"] *
+                        (1ULL << setupCtx.starkInfo.starkStruct.nBits));
+    }
     calculateWitnessExpr(setupCtx, params, expressionsCtx);
     if(recursive) {
         starks.commitStage(1, params.trace, params.aux_trace, proof, ntt);
@@ -144,6 +149,17 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
         starks.commitStage(1, params.trace, params.aux_trace, proof, ntt, &params.aux_trace[setupCtx.starkInfo.mapOffsets[std::make_pair("buff_helper_fft_1", false)]]);
     }
     pil2DumpU64(dumpPrefix + "root1", &proof.proof.roots[0][0], HASH_SIZE);
+    if (setupCtx.starkInfo.mapSectionsN.count("cm1")) {
+        pil2DumpU64(dumpPrefix + "trace_post", params.trace,
+                    setupCtx.starkInfo.mapSectionsN["cm1"] *
+                        (1ULL << setupCtx.starkInfo.starkStruct.nBits));
+    }
+    if (setupCtx.starkInfo.mapOffsets.count(std::make_pair(std::string("cm1"), true))) {
+        pil2DumpU64(dumpPrefix + "cm1_ext",
+                    &params.aux_trace[setupCtx.starkInfo.mapOffsets[std::make_pair(std::string("cm1"), true)]],
+                    setupCtx.starkInfo.mapSectionsN["cm1"] *
+                        (1ULL << setupCtx.starkInfo.starkStruct.nBitsExt));
+    }
     TimerStopAndLog(STARK_STEP_1);
 
     TimerStart(STARK_STEP_2);
@@ -300,6 +316,8 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
             
         }
         starks.getChallenge(transcript, *challenge);
+        pil2DumpU64(dumpPrefix + "fri_beta" + std::to_string(step), challenge,
+                    FIELD_EXTENSION);
     }
     pil2DumpU64(dumpPrefix + "challenges", params.challenges,
                 setupCtx.starkInfo.challengesMap.size() * FIELD_EXTENSION);
