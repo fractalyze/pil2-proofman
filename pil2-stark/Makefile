@@ -177,7 +177,7 @@ else ifeq ($(UNAME_S),Linux)
     CFLAGS   = -fopenmp
 
     # Add MPI include path and libraries - use C bindings only
-    CPPFLAGS += $(MPI_CPPFLAGS) -DOMPI_SKIP_MPICXX -DMPICH_SKIP_MPICXX -D__USE_MPI_RMA__ -D__USE_ASSEMBLY__
+    CPPFLAGS += $(MPI_CPPFLAGS) -DOMPI_SKIP_MPICXX -DMPICH_SKIP_MPICXX -D__USE_ASSEMBLY__
     LDFLAGS += $(MPI_LDFLAGS)
     # AVX512/AVX2 detection
     AVX512_SUPPORTED := $(shell cat /proc/cpuinfo | grep -E 'avx512' -m 1)

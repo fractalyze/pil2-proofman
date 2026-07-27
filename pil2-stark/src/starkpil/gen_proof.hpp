@@ -1,4 +1,5 @@
 #include "starks.hpp"
+#include "pil2_dump.hpp"
 #include "starks_api_internal.hpp"
 
 void calculateWitnessExpr(SetupCtx& setupCtx, StepsParams& params, ExpressionsCtx &expressionsCtx) {
@@ -117,6 +118,7 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
     } else {
         starks.commitStage(1, params.trace, params.aux_trace, proof, ntt, &params.aux_trace[setupCtx.starkInfo.mapOffsets[std::make_pair("buff_helper_fft_1", false)]]);
     }
+    pil2DumpU64("root1", &proof.proof.roots[0][0], HASH_SIZE);
     TimerStopAndLog(STARK_STEP_1);
 
     TimerStart(STARK_STEP_2);
@@ -142,6 +144,7 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
         starks.commitStage(2, nullptr, params.aux_trace, proof, ntt, &params.aux_trace[setupCtx.starkInfo.mapOffsets[std::make_pair("buff_helper_fft_2", false)]]);
     }
     TimerStopAndLog(STARK_COMMIT_STAGE_2);
+    pil2DumpU64("root2", &proof.proof.roots[1][0], HASH_SIZE);
     starks.addTranscript(transcript, &proof.proof.roots[1][0], HASH_SIZE);
 
     uint64_t a = 0;
@@ -167,6 +170,15 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
     TimerStart(STARK_CALCULATE_QUOTIENT_POLYNOMIAL);
     starks.calculateQuotientPolynomial(params, expressionsCtx);
     TimerStopAndLog(STARK_CALCULATE_QUOTIENT_POLYNOMIAL);
+    {
+        std::string qName = "cm" + std::to_string(setupCtx.starkInfo.nStages + 1);
+        auto qKey = std::make_pair(qName, true);
+        if (setupCtx.starkInfo.mapOffsets.count(qKey) && setupCtx.starkInfo.mapSectionsN.count(qName)) {
+            uint64_t nExtQ = 1ULL << setupCtx.starkInfo.starkStruct.nBitsExt;
+            pil2DumpU64("quotient_cm", &params.aux_trace[setupCtx.starkInfo.mapOffsets[qKey]],
+                        nExtQ * setupCtx.starkInfo.mapSectionsN[qName]);
+        }
+    }
 
     TimerStart(STARK_COMMIT_QUOTIENT_POLYNOMIAL);
     if (recursive) {
@@ -175,6 +187,7 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
         starks.commitStage(setupCtx.starkInfo.nStages + 1, nullptr, params.aux_trace, proof, nttExtended, &params.aux_trace[setupCtx.starkInfo.mapOffsets[std::make_pair("buff_helper_fft_3", false)]]);
     }
     TimerStopAndLog(STARK_COMMIT_QUOTIENT_POLYNOMIAL);
+    pil2DumpU64("rootQ", &proof.proof.roots[setupCtx.starkInfo.nStages][0], HASH_SIZE);
     starks.addTranscript(transcript, &proof.proof.roots[setupCtx.starkInfo.nStages][0], HASH_SIZE);
     TimerStopAndLog(STARK_STEP_Q);
 
@@ -204,6 +217,7 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
     }
     
 
+    pil2DumpU64("evals", params.evals, setupCtx.starkInfo.evMap.size() * FIELD_EXTENSION);
     if(!setupCtx.starkInfo.starkStruct.hashCommits) {
         starks.addTranscriptGL(transcript, params.evals, setupCtx.starkInfo.evMap.size() * FIELD_EXTENSION);
     } else {
@@ -232,6 +246,8 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
 
     Goldilocks::Element challenge[FIELD_EXTENSION];
     Goldilocks::Element *friPol = &params.aux_trace[setupCtx.starkInfo.mapOffsets[std::make_pair("f", true)]];
+    pil2DumpU64("deep_f", friPol,
+                (1ULL << setupCtx.starkInfo.starkStruct.steps[0].nBits) * FIELD_EXTENSION);
     
     TimerStart(STARK_FRI_FOLDING);
     uint64_t nBitsExt =  setupCtx.starkInfo.starkStruct.steps[0].nBits;
@@ -240,6 +256,8 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
         uint64_t currentBits = setupCtx.starkInfo.starkStruct.steps[step].nBits;
         uint64_t prevBits = step == 0 ? currentBits : setupCtx.starkInfo.starkStruct.steps[step - 1].nBits;
         FRI<Goldilocks::Element>::fold(step, friPol, challenge, nBitsExt, prevBits, currentBits);
+        pil2DumpU64("fri_layer" + std::to_string(step), friPol,
+                    (1ULL << currentBits) * FIELD_EXTENSION);
         if (step < setupCtx.starkInfo.starkStruct.steps.size() - 1)
         {
             FRI<Goldilocks::Element>::merkelize(step, proof, friPol, starks.treesFRI[step], currentBits, setupCtx.starkInfo.starkStruct.steps[step + 1].nBits);
@@ -258,6 +276,8 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
         }
         starks.getChallenge(transcript, *challenge);
     }
+    pil2DumpU64("challenges", params.challenges,
+                setupCtx.starkInfo.challengesMap.size() * FIELD_EXTENSION);
     TimerStopAndLog(STARK_FRI_FOLDING);
     TimerStart(STARK_FRI_QUERIES);
 
