@@ -219,6 +219,11 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
     TimerStart(STARK_CALCULATE_QUOTIENT_POLYNOMIAL);
     starks.calculateQuotientPolynomial(params, expressionsCtx);
     TimerStopAndLog(STARK_CALCULATE_QUOTIENT_POLYNOMIAL);
+    if (setupCtx.starkInfo.mapOffsets.count(std::make_pair(std::string("q"), true))) {
+        pil2DumpU64(dumpPrefix + "q_ext",
+                    &params.aux_trace[setupCtx.starkInfo.mapOffsets[std::make_pair(std::string("q"), true)]],
+                    (1ULL << setupCtx.starkInfo.starkStruct.nBitsExt) * setupCtx.starkInfo.qDim);
+    }
     TimerStart(STARK_COMMIT_QUOTIENT_POLYNOMIAL);
     if (recursive) {
         starks.commitStage(setupCtx.starkInfo.nStages + 1, nullptr, params.aux_trace, proof, nttExtended);
@@ -349,6 +354,12 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
         pil2DumpU64(dumpPrefix + "fri_beta" + std::to_string(step), challenge,
                     FIELD_EXTENSION);
     }
+    pil2DumpU64(dumpPrefix + "airvalues", params.airValues,
+                setupCtx.starkInfo.airValuesSize);
+    pil2DumpU64(dumpPrefix + "airgroupvalues", params.airgroupValues,
+                setupCtx.starkInfo.airgroupValuesSize);
+    pil2DumpU64(dumpPrefix + "proofvalues", params.proofValues,
+                setupCtx.starkInfo.proofValuesSize);
     pil2DumpU64(dumpPrefix + "challenges", params.challenges,
                 setupCtx.starkInfo.challengesMap.size() * FIELD_EXTENSION);
     TimerStopAndLog(STARK_FRI_FOLDING);
