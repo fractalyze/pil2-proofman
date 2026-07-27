@@ -211,6 +211,13 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
     TimerStart(STARK_CALCULATE_QUOTIENT_POLYNOMIAL);
     starks.calculateQuotientPolynomial(params, expressionsCtx);
     TimerStopAndLog(STARK_CALCULATE_QUOTIENT_POLYNOMIAL);
+    TimerStart(STARK_COMMIT_QUOTIENT_POLYNOMIAL);
+    if (recursive) {
+        starks.commitStage(setupCtx.starkInfo.nStages + 1, nullptr, params.aux_trace, proof, nttExtended);
+    } else {
+        starks.commitStage(setupCtx.starkInfo.nStages + 1, nullptr, params.aux_trace, proof, nttExtended, &params.aux_trace[setupCtx.starkInfo.mapOffsets[std::make_pair("buff_helper_fft_3", false)]]);
+    }
+    TimerStopAndLog(STARK_COMMIT_QUOTIENT_POLYNOMIAL);
     {
         std::string qName = "cm" + std::to_string(setupCtx.starkInfo.nStages + 1);
         auto qKey = std::make_pair(qName, true);
@@ -221,13 +228,6 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
         }
     }
 
-    TimerStart(STARK_COMMIT_QUOTIENT_POLYNOMIAL);
-    if (recursive) {
-        starks.commitStage(setupCtx.starkInfo.nStages + 1, nullptr, params.aux_trace, proof, nttExtended);
-    } else {
-        starks.commitStage(setupCtx.starkInfo.nStages + 1, nullptr, params.aux_trace, proof, nttExtended, &params.aux_trace[setupCtx.starkInfo.mapOffsets[std::make_pair("buff_helper_fft_3", false)]]);
-    }
-    TimerStopAndLog(STARK_COMMIT_QUOTIENT_POLYNOMIAL);
     pil2DumpU64(dumpPrefix + "rootQ", &proof.proof.roots[setupCtx.starkInfo.nStages][0], HASH_SIZE);
     starks.addTranscript(transcript, &proof.proof.roots[setupCtx.starkInfo.nStages][0], HASH_SIZE);
     TimerStopAndLog(STARK_STEP_Q);
@@ -259,6 +259,28 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
     
 
     pil2DumpU64(dumpPrefix + "evals", params.evals, setupCtx.starkInfo.evMap.size() * FIELD_EXTENSION);
+    if (std::getenv("PIL2_DUMP_DIR")) {
+        uint64_t nExtD = 1ULL << setupCtx.starkInfo.starkStruct.nBitsExt;
+        for (uint64_t st = 2; st <= setupCtx.starkInfo.nStages; st++) {
+            std::string sec = "cm" + std::to_string(st);
+            auto k = std::make_pair(sec, true);
+            if (setupCtx.starkInfo.mapOffsets.count(k) && setupCtx.starkInfo.mapSectionsN.count(sec)) {
+                pil2DumpU64(dumpPrefix + sec + "_ext", &params.aux_trace[setupCtx.starkInfo.mapOffsets[k]],
+                            nExtD * setupCtx.starkInfo.mapSectionsN[sec]);
+            }
+        }
+        pil2DumpU64(dumpPrefix + "const_ext",
+                    starks.treesGL[setupCtx.starkInfo.nStages + 1]->source,
+                    nExtD * setupCtx.starkInfo.nConstants);
+        for (uint64_t i = 0; i < setupCtx.starkInfo.customCommits.size(); i++) {
+            std::string sec = setupCtx.starkInfo.customCommits[i].name + "0";
+            if (setupCtx.starkInfo.mapSectionsN.count(sec)) {
+                pil2DumpU64(dumpPrefix + "custom" + std::to_string(i) + "_ext",
+                            starks.treesGL[setupCtx.starkInfo.nStages + 2 + i]->source,
+                            nExtD * setupCtx.starkInfo.mapSectionsN[sec]);
+            }
+        }
+    }
     if(!setupCtx.starkInfo.starkStruct.hashCommits) {
         starks.addTranscriptGL(transcript, params.evals, setupCtx.starkInfo.evMap.size() * FIELD_EXTENSION);
     } else {
