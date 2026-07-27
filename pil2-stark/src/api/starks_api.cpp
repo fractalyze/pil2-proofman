@@ -676,10 +676,15 @@ uint64_t commit_witness_cpu(void *pSetupCtx_, void *params_, uint64_t instanceId
 
     PackedInfoCPU *packed_info = d_buffers->getPackedInfo(airgroupId, airId);
     if (packed_info != nullptr && packed_info->is_packed) {
-        d_buffers->unpack_cpu((uint64_t *)params->trace, (uint64_t*)&auxTraceGL[offset_src], N, nCols, packed_info->num_packed_words, packed_info->unpack_info);
+        if (packed_info->indexed()) {
+            const uint64_t* table = d_buffers->getInstructionTable(airgroupId, airId);
+            d_buffers->unpack_cpu_indexed((uint64_t *)params->trace, table, (uint64_t*)&auxTraceGL[offset_src], N, nCols, packed_info->num_packed_words, packed_info->words_per_entry, packed_info->unpack_info, packed_info->col_source, packed_info->index_bits);
+        } else {
+            d_buffers->unpack_cpu((uint64_t *)params->trace, (uint64_t*)&auxTraceGL[offset_src], N, nCols, packed_info->num_packed_words, packed_info->unpack_info);
+        }
         memcpy(params->trace, &params->aux_trace[offset_src], N * nCols * sizeof(Goldilocks::Element));
     }
-    
+
     ProverHelpers proverHelpers;
     ExpressionsPack expressionsCtx(*setupCtx, &proverHelpers);
 
@@ -799,7 +804,12 @@ uint64_t gen_proof_cpu(void *pSetupCtx, uint64_t airgroupId, uint64_t airId, uin
 
     PackedInfoCPU *packed_info = d_buffers->getPackedInfo(airgroupId, airId);
     if (packed_info != nullptr && packed_info->is_packed) {
-        d_buffers->unpack_cpu((uint64_t *)params->trace, (uint64_t*)&params->aux_trace[offsetCm1], N, nCols, packed_info->num_packed_words, packed_info->unpack_info);
+        if (packed_info->indexed()) {
+            const uint64_t* table = d_buffers->getInstructionTable(airgroupId, airId);
+            d_buffers->unpack_cpu_indexed((uint64_t *)params->trace, table, (uint64_t*)&params->aux_trace[offsetCm1], N, nCols, packed_info->num_packed_words, packed_info->words_per_entry, packed_info->unpack_info, packed_info->col_source, packed_info->index_bits);
+        } else {
+            d_buffers->unpack_cpu((uint64_t *)params->trace, (uint64_t*)&params->aux_trace[offsetCm1], N, nCols, packed_info->num_packed_words, packed_info->unpack_info);
+        }
         memcpy(params->trace, &params->aux_trace[offsetCm1], N * nCols * sizeof(Goldilocks::Element));
     }
     genProof(*(SetupCtx *)pSetupCtx, airgroupId, airId, instanceId, *(StepsParams *)params, (Goldilocks::Element *)globalChallenge, proofBuffer, string(proofFile));
@@ -817,6 +827,12 @@ void use_packed_trace_cpu(void *d_buffers_, bool packed) {
     DeviceCommitBuffersCPU *d_buffers = (DeviceCommitBuffersCPU *)d_buffers_;
     d_buffers->packedTrace = packed;
 }
+
+// Store the program's instruction table for an indexed air; used by unpack_cpu_indexed.
+void register_instruction_table_cpu(void *d_buffers_, uint64_t airgroupId, uint64_t airId, uint64_t *table, uint64_t num_entries, uint64_t words_per_entry) {
+    DeviceCommitBuffersCPU *d_buffers = (DeviceCommitBuffersCPU *)d_buffers_;
+    d_buffers->registerInstructionTable(airgroupId, airId, table, num_entries, words_per_entry);
+}
 void free_device_buffers_cpu(void *d_buffers_) {
     DeviceCommitBuffersCPU *d_buffers = (DeviceCommitBuffersCPU *)d_buffers_;
     delete d_buffers;
@@ -829,7 +845,7 @@ void load_device_setup_cpu(uint64_t airgroupId, uint64_t airId, char *proofType,
     uint64_t nCols = setupCtx->starkInfo.mapSectionsN["cm1"];
     PackedInfo *packedInfo = (PackedInfo *)packedInfo_;
     if (packedInfo != nullptr) {
-        d_buffers->addPackedInfoCPU(airgroupId, airId, nCols, packedInfo->is_packed, packedInfo->num_packed_words, packedInfo->unpack_info);
+        d_buffers->addPackedInfoCPU(airgroupId, airId, nCols, packedInfo->is_packed, packedInfo->num_packed_words, packedInfo->unpack_info, packedInfo->col_source, packedInfo->index_bits, packedInfo->words_per_entry);
     }
 }
 

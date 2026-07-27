@@ -6,11 +6,17 @@
 extern "C" {
 #endif
 
+    // Field order must match the Rust PackedInfoFFI (repr(C)) that is cast to this.
     struct PackedInfo {
         bool is_packed;
         uint64_t num_packed_words;
         uint64_t *unpack_info;
+        // Indexed variant descriptor (nullptr / 0 when the air is not indexed).
+        uint8_t *col_source;      // per column: 0 = row stream, 1 = table stream (len nCols)
+        uint64_t index_bits;      // width of the compact row's leading index header
+        uint64_t words_per_entry; // u64 words per instruction-table entry
 
+        // Only unpack_info is owned here; col_source is borrowed from Rust, do not free it.
         ~PackedInfo() {
             delete[] unpack_info;
             unpack_info = nullptr;
@@ -181,6 +187,7 @@ extern "C" {
     // =================================================================================
     void *gen_device_buffers(uint32_t node_rank, uint32_t node_size, const int32_t* numa_nodes, uint32_t arity, uint32_t max_n_bits_ext);
     void use_packed_trace(void *d_buffers, bool packed);
+    void register_instruction_table(void *d_buffers, uint64_t airgroupId, uint64_t airId, uint64_t *table, uint64_t num_entries, uint64_t words_per_entry);
     void free_device_buffers(void *d_buffers);
     void *gen_device_buffers_recursivef(void *pSetupCtx_, uint64_t proverBufferSize, void *d_commit_buffers, char* verkey);
     void free_device_buffers_recursivef(void *d_buffers);

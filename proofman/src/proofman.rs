@@ -12,7 +12,7 @@ use proofman_starks_lib_c::{init_gpu_setup_c, set_gpu_mode_c, GOLDILOCKS_MERKLE_
 use proofman_starks_lib_c::{load_device_const_pols_c, load_device_setup_c};
 use proofman_starks_lib_c::{
     get_stream_proofs_c, get_stream_proofs_non_blocking_c, register_proof_done_callback_c, reset_device_streams_c,
-    get_instances_ready_c, free_device_buffers_c, use_packed_trace_c,
+    get_instances_ready_c, free_device_buffers_c, use_packed_trace_c, register_instruction_table_c,
 };
 use crate::add_publics_circom;
 use proofman_verifier::verifier;
@@ -2129,6 +2129,27 @@ where
 
     pub fn register_custom_commits(&self, custom_commits_fixed: HashMap<String, PathBuf>) -> ProofmanResult<()> {
         self.pctx.initialize_custom_commits(custom_commits_fixed, &self.sctx, false)
+    }
+
+    /// Upload (per program) the instruction table for an indexed air (GPU). No-op for airs
+    /// without an indexed descriptor. `table` is `num_entries * words_per_entry` packed u64 words.
+    pub fn register_instruction_table(
+        &self,
+        airgroup_id: usize,
+        air_id: usize,
+        table: &[u64],
+        num_entries: u64,
+        words_per_entry: u64,
+    ) -> ProofmanResult<()> {
+        register_instruction_table_c(
+            self.pctx.get_device_buffers_ptr(),
+            airgroup_id as u64,
+            air_id as u64,
+            table,
+            num_entries,
+            words_per_entry,
+        );
+        Ok(())
     }
 
     pub fn register_witness(&self, witness_lib: &mut dyn WitnessLibrary<F>, library: Library) -> ProofmanResult<()> {

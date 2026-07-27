@@ -102,6 +102,69 @@ __global__ void unpack(
     }
 }
 
+// Read `nbits` from a packed stream at cursor (word,idx,off), advancing the cursor.
+// Mirrors unpack()'s bit-walk exactly so indexed output is bit-identical.
+__device__ __forceinline__ uint64_t idx_read_bits(
+    const uint64_t* base, uint64_t words, uint64_t &word, uint64_t &idx, uint64_t &off, uint64_t nbits)
+{
+    uint64_t val;
+    uint64_t bits_left = 64 - off;
+    if (nbits <= bits_left) {
+        uint64_t mask = (nbits == 64) ? ~0ULL : ((1ULL << nbits) - 1ULL);
+        val = (word >> off) & mask;
+        off += nbits;
+        if (off == 64 && idx + 1 < words) { word = base[++idx]; off = 0; }
+    } else {
+        uint64_t low = word >> off;
+        word = base[++idx];
+        uint64_t high = word & ((1ULL << (nbits - bits_left)) - 1ULL);
+        val = (high << bits_left) | low;
+        off = nbits - bits_left;
+    }
+    return val;
+}
+
+// Indexed unpack: each compact row holds a leading instruction index plus the runtime
+// columns; the instruction-derived columns live once in `table`. Two bit cursors (row,
+// table); each output column c is sourced per d_col_source[c]. Bit-identical to unpack().
+__global__ void unpack_indexed(
+    const uint64_t* src,             // compact rows: words_per_row each
+    const uint64_t* table,           // instruction table: words_per_entry each
+    uint64_t* dst,
+    uint64_t nRows,
+    uint64_t nCols,
+    uint64_t words_per_row,
+    uint64_t words_per_entry,
+    const uint64_t* d_unpack_info,   // nbits per output column
+    const uint8_t*  d_col_source,    // 0 = from row stream, 1 = from table stream
+    uint64_t index_bits,             // width of the leading index header in the row
+    Layout layout
+) {
+    extern __shared__ uint64_t shared_unpack_info[];
+    for (uint64_t i = threadIdx.x; i < nCols; i += blockDim.x) {
+        shared_unpack_info[i] = d_unpack_info[i];
+    }
+    __syncthreads();
+
+    uint64_t row = blockIdx.x * blockDim.x + threadIdx.x;
+    if (row >= nRows) return;
+
+    const uint64_t* rbase = src + row * words_per_row;
+    uint64_t rword = rbase[0], ridx = 0, roff = 0;
+    uint64_t index = idx_read_bits(rbase, words_per_row, rword, ridx, roff, index_bits);
+
+    const uint64_t* tbase = table + index * words_per_entry;
+    uint64_t tword = tbase[0], tidx = 0, toff = 0;
+
+    for (uint64_t c = 0; c < nCols; c++) {
+        uint64_t nbits = shared_unpack_info[c];
+        uint64_t val = d_col_source[c]
+            ? idx_read_bits(tbase, words_per_entry, tword, tidx, toff, nbits)
+            : idx_read_bits(rbase, words_per_row, rword, ridx, roff, nbits);
+        dst[getBufferOffset(row, c, nRows, nCols, layout)] = val;
+    }
+}
+
 void unpack_fixed(
     uint64_t* d_num_packed_words,
     uint64_t* d_unpack_info,
@@ -144,17 +207,36 @@ void unpack_trace(
     dim3 blocks((nRows + threads.x - 1) / threads.x);
 
     size_t sharedMemSize = nCols * sizeof(uint64_t);
+    Layout layout = resolveLayout(63 - __builtin_clzll(nRows), nCols);
     TimerStartCategoryGPU(timer, UNPACK_TRACE);
-    // cm1 unpack: same storage layout the commit/LDE uses (resolveLayout on the small domain).
-    unpack<<<blocks, threads, sharedMemSize, stream>>>(
-        src,
-        dst,
-        nRows,
-        nCols,
-        air_instance_info->d_num_packed_words,
-        air_instance_info->unpack_info,
-        resolveLayout(63 - __builtin_clzll(nRows), nCols)
-    );
+    if (air_instance_info->d_instr_table != nullptr) {
+        // Indexed cm1 unpack: compact rows + shared instruction table reconstruct the full
+        // nCols output. Same storage layout as the plain path.
+        unpack_indexed<<<blocks, threads, sharedMemSize, stream>>>(
+            src,
+            air_instance_info->d_instr_table,
+            dst,
+            nRows,
+            nCols,
+            air_instance_info->num_packed_words,
+            air_instance_info->words_per_entry,
+            air_instance_info->unpack_info,
+            air_instance_info->d_col_source,
+            air_instance_info->index_bits,
+            layout
+        );
+    } else {
+        // cm1 unpack: same storage layout the commit/LDE uses (resolveLayout on the small domain).
+        unpack<<<blocks, threads, sharedMemSize, stream>>>(
+            src,
+            dst,
+            nRows,
+            nCols,
+            air_instance_info->d_num_packed_words,
+            air_instance_info->unpack_info,
+            layout
+        );
+    }
     TimerStopCategoryGPU(timer, UNPACK_TRACE);
     CHECKCUDAERR(cudaGetLastError());
 }

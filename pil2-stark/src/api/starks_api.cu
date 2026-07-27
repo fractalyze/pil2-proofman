@@ -355,6 +355,25 @@ void use_packed_trace_gpu(void *d_buffers_, bool packed) {
     d_buffers->packedTrace = packed;
 }
 
+// Upload (per program) the instruction table for an indexed air onto every local GPU's
+// AirInstanceInfo. Non-indexed instances (d_col_source == nullptr) are skipped.
+void register_instruction_table_gpu(void *d_buffers_, uint64_t airgroupId, uint64_t airId,
+                                    uint64_t *table, uint64_t num_entries, uint64_t words_per_entry) {
+    DeviceCommitBuffers *d_buffers = (DeviceCommitBuffers *)d_buffers_;
+    std::pair<uint64_t, uint64_t> key = {airgroupId, airId};
+    auto it = d_buffers->air_instances.find(key);
+    if (it == d_buffers->air_instances.end()) return;
+    for (auto &per_proof_type : it->second) {
+        std::vector<AirInstanceInfo *> &instances = per_proof_type.second;
+        for (int i = 0; i < d_buffers->n_gpus && i < (int)instances.size(); ++i) {
+            AirInstanceInfo *aii = instances[i];
+            if (aii == nullptr || aii->d_col_source == nullptr) continue; // indexed airs only
+            cudaSetDevice(d_buffers->my_gpu_ids[i]);
+            aii->set_instruction_table(table, num_entries, words_per_entry);
+        }
+    }
+}
+
 void alloc_device_large_buffers_gpu(void *d_buffers_, uint64_t auxTraceArea, uint64_t auxTraceRecursiveArea, uint64_t totalConstPols, uint64_t totalConstPolsAggregation) {
     DeviceCommitBuffers *d_buffers = (DeviceCommitBuffers *)d_buffers_;
     uint64_t constPolsSize = totalConstPols * sizeof(Goldilocks::Element);

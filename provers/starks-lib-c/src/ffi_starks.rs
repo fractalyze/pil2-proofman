@@ -1400,6 +1400,19 @@ pub fn use_packed_trace_c(d_commit_buffers: *mut ::std::os::raw::c_void, packed_
     }
 }
 
+pub fn register_instruction_table_c(
+    d_commit_buffers: *mut ::std::os::raw::c_void,
+    airgroup_id: u64,
+    air_id: u64,
+    table: &[u64],
+    num_entries: u64,
+    words_per_entry: u64,
+) {
+    unsafe {
+        register_instruction_table(d_commit_buffers, airgroup_id, air_id, table.as_ptr(), num_entries, words_per_entry);
+    }
+}
+
 pub fn gen_device_buffers_recursivef_c(
     p_setup_ctx: *mut u8,
     prover_buffer_size: u64,
