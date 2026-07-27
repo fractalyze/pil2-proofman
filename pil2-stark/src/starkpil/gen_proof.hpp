@@ -186,6 +186,14 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
     }
     TimerStopAndLog(STARK_COMMIT_STAGE_2);
     pil2DumpU64(dumpPrefix + "root2", &proof.proof.roots[1][0], HASH_SIZE);
+    {
+        auto k2 = std::make_pair(std::string("cm2"), false);
+        if (setupCtx.starkInfo.mapOffsets.count(k2) && setupCtx.starkInfo.mapSectionsN.count("cm2")) {
+            pil2DumpU64(dumpPrefix + "cm2_base", &params.aux_trace[setupCtx.starkInfo.mapOffsets[k2]],
+                        (1ULL << setupCtx.starkInfo.starkStruct.nBits) *
+                            setupCtx.starkInfo.mapSectionsN["cm2"]);
+        }
+    }
     starks.addTranscript(transcript, &proof.proof.roots[1][0], HASH_SIZE);
 
     uint64_t a = 0;
