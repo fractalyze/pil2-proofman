@@ -75,6 +75,31 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
     FRIProof<Goldilocks::Element> proof(setupCtx.starkInfo, airgroupId, airId, instanceId);
     
     Starks<Goldilocks::Element> starks(setupCtx, params.pConstPolsExtendedTreeAddress, params.pCustomCommitsFixed, false, false);
+
+    // One dump-name prefix per AIR instance so multi-instance proves never
+    // overwrite each other's files; the stage-1 trace and publics let a
+    // consumer replay the whole pipeline from the same witness.
+    std::string dumpPrefix = "ag" + std::to_string(airgroupId) + "_air" +
+        std::to_string(airId) + "_inst" + std::to_string(instanceId) + "_";
+    if (std::getenv("PIL2_DUMP_DIR")) {
+        if (setupCtx.starkInfo.mapSectionsN.count("cm1")) {
+            pil2DumpU64(dumpPrefix + "trace", params.trace,
+                        setupCtx.starkInfo.mapSectionsN["cm1"] *
+                            (1ULL << setupCtx.starkInfo.starkStruct.nBits));
+        }
+        pil2DumpU64(dumpPrefix + "publics", params.publicInputs,
+                    setupCtx.starkInfo.nPublics);
+        std::string mp = std::string(std::getenv("PIL2_DUMP_DIR")) + "/" + dumpPrefix + "meta.json";
+        FILE* mf = fopen(mp.c_str(), "w");
+        if (mf) {
+            fprintf(mf, "{\n  \"airgroup_id\": %lu,\n  \"air_id\": %lu,\n  \"instance_id\": %lu,\n"
+                        "  \"n_bits\": %lu,\n  \"n_bits_ext\": %lu\n}\n",
+                    airgroupId, airId, instanceId,
+                    setupCtx.starkInfo.starkStruct.nBits,
+                    setupCtx.starkInfo.starkStruct.nBitsExt);
+            fclose(mf);
+        }
+    }
     
     ExpressionsPack expressionsCtx(setupCtx, &proverHelpers);
 
@@ -118,7 +143,7 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
     } else {
         starks.commitStage(1, params.trace, params.aux_trace, proof, ntt, &params.aux_trace[setupCtx.starkInfo.mapOffsets[std::make_pair("buff_helper_fft_1", false)]]);
     }
-    pil2DumpU64("root1", &proof.proof.roots[0][0], HASH_SIZE);
+    pil2DumpU64(dumpPrefix + "root1", &proof.proof.roots[0][0], HASH_SIZE);
     TimerStopAndLog(STARK_STEP_1);
 
     TimerStart(STARK_STEP_2);
@@ -144,7 +169,7 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
         starks.commitStage(2, nullptr, params.aux_trace, proof, ntt, &params.aux_trace[setupCtx.starkInfo.mapOffsets[std::make_pair("buff_helper_fft_2", false)]]);
     }
     TimerStopAndLog(STARK_COMMIT_STAGE_2);
-    pil2DumpU64("root2", &proof.proof.roots[1][0], HASH_SIZE);
+    pil2DumpU64(dumpPrefix + "root2", &proof.proof.roots[1][0], HASH_SIZE);
     starks.addTranscript(transcript, &proof.proof.roots[1][0], HASH_SIZE);
 
     uint64_t a = 0;
@@ -175,7 +200,7 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
         auto qKey = std::make_pair(qName, true);
         if (setupCtx.starkInfo.mapOffsets.count(qKey) && setupCtx.starkInfo.mapSectionsN.count(qName)) {
             uint64_t nExtQ = 1ULL << setupCtx.starkInfo.starkStruct.nBitsExt;
-            pil2DumpU64("quotient_cm", &params.aux_trace[setupCtx.starkInfo.mapOffsets[qKey]],
+            pil2DumpU64(dumpPrefix + "quotient_cm", &params.aux_trace[setupCtx.starkInfo.mapOffsets[qKey]],
                         nExtQ * setupCtx.starkInfo.mapSectionsN[qName]);
         }
     }
@@ -187,7 +212,7 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
         starks.commitStage(setupCtx.starkInfo.nStages + 1, nullptr, params.aux_trace, proof, nttExtended, &params.aux_trace[setupCtx.starkInfo.mapOffsets[std::make_pair("buff_helper_fft_3", false)]]);
     }
     TimerStopAndLog(STARK_COMMIT_QUOTIENT_POLYNOMIAL);
-    pil2DumpU64("rootQ", &proof.proof.roots[setupCtx.starkInfo.nStages][0], HASH_SIZE);
+    pil2DumpU64(dumpPrefix + "rootQ", &proof.proof.roots[setupCtx.starkInfo.nStages][0], HASH_SIZE);
     starks.addTranscript(transcript, &proof.proof.roots[setupCtx.starkInfo.nStages][0], HASH_SIZE);
     TimerStopAndLog(STARK_STEP_Q);
 
@@ -217,7 +242,7 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
     }
     
 
-    pil2DumpU64("evals", params.evals, setupCtx.starkInfo.evMap.size() * FIELD_EXTENSION);
+    pil2DumpU64(dumpPrefix + "evals", params.evals, setupCtx.starkInfo.evMap.size() * FIELD_EXTENSION);
     if(!setupCtx.starkInfo.starkStruct.hashCommits) {
         starks.addTranscriptGL(transcript, params.evals, setupCtx.starkInfo.evMap.size() * FIELD_EXTENSION);
     } else {
@@ -246,7 +271,7 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
 
     Goldilocks::Element challenge[FIELD_EXTENSION];
     Goldilocks::Element *friPol = &params.aux_trace[setupCtx.starkInfo.mapOffsets[std::make_pair("f", true)]];
-    pil2DumpU64("deep_f", friPol,
+    pil2DumpU64(dumpPrefix + "deep_f", friPol,
                 (1ULL << setupCtx.starkInfo.starkStruct.steps[0].nBits) * FIELD_EXTENSION);
     
     TimerStart(STARK_FRI_FOLDING);
@@ -256,7 +281,7 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
         uint64_t currentBits = setupCtx.starkInfo.starkStruct.steps[step].nBits;
         uint64_t prevBits = step == 0 ? currentBits : setupCtx.starkInfo.starkStruct.steps[step - 1].nBits;
         FRI<Goldilocks::Element>::fold(step, friPol, challenge, nBitsExt, prevBits, currentBits);
-        pil2DumpU64("fri_layer" + std::to_string(step), friPol,
+        pil2DumpU64(dumpPrefix + "fri_layer" + std::to_string(step), friPol,
                     (1ULL << currentBits) * FIELD_EXTENSION);
         if (step < setupCtx.starkInfo.starkStruct.steps.size() - 1)
         {
@@ -276,7 +301,7 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
         }
         starks.getChallenge(transcript, *challenge);
     }
-    pil2DumpU64("challenges", params.challenges,
+    pil2DumpU64(dumpPrefix + "challenges", params.challenges,
                 setupCtx.starkInfo.challengesMap.size() * FIELD_EXTENSION);
     TimerStopAndLog(STARK_FRI_FOLDING);
     TimerStart(STARK_FRI_QUERIES);
