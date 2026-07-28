@@ -177,6 +177,16 @@ pub struct ProofmanOptions {
     pub gpu: bool,
     pub packed: bool,
     pub packed_info: HashMap<(usize, usize), PackedInfo>,
+    /// Airs whose const pols are streamed from disk per proof rather than kept
+    /// GPU-resident, applied to each air's Basic/Compressor/Recursive1 circuits.
+    /// Trades VRAM for a synchronous read per proof. Empty (the default) = all resident.
+    pub non_resident_const_pols_gpu: Vec<(usize, usize)>,
+    /// Airs whose const *tree* is preallocated GPU-resident, applied to each air's
+    /// Basic/Recursive1 circuits. Saves a per-proof tree load from disk at a cost of
+    /// `const_tree_size` VRAM each -- far larger than the packed pols, so this is the
+    /// expensive knob. Airgroup 0's Recursive2 tree is always resident and is not
+    /// listed here. Empty (the default) = nothing but that Recursive2 is preallocated.
+    pub preloaded_const_tree_gpu: Vec<(usize, usize)>,
 }
 
 impl Default for ProofmanOptions {
@@ -193,6 +203,8 @@ impl Default for ProofmanOptions {
             aggregation: true,
             verbose_mode: VerboseMode::Info,
             packed_info: HashMap::new(),
+            non_resident_const_pols_gpu: Vec::new(),
+            preloaded_const_tree_gpu: Vec::new(),
         }
     }
 }
@@ -242,6 +254,14 @@ impl ProofmanOptions {
 
     pub fn packed_info(&mut self, packed_info: HashMap<(usize, usize), PackedInfo>) {
         self.packed_info = packed_info;
+    }
+
+    pub fn non_resident_const_pols_gpu(&mut self, non_resident_const_pols_gpu: Vec<(usize, usize)>) {
+        self.non_resident_const_pols_gpu = non_resident_const_pols_gpu;
+    }
+
+    pub fn preloaded_const_tree_gpu(&mut self, preloaded_const_tree_gpu: Vec<(usize, usize)>) {
+        self.preloaded_const_tree_gpu = preloaded_const_tree_gpu;
     }
 }
 

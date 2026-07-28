@@ -987,8 +987,13 @@ pub fn load_device_const_pols<F: PrimeField64>(
                     setup.const_tree_size as u64,
                     proof_type,
                     only_first_gpu,
+                    setup.store_const_pols,
                 );
-                offset += setup.const_pols_size_packed as u64;
+                // Non-resident airs occupy no slot, so the offset must not advance for
+                // them -- this mirrors the sizing side in SetupRepository::new.
+                if setup.store_const_pols {
+                    offset += setup.const_pols_size_packed as u64;
+                }
                 if load_tree {
                     offset += setup.const_tree_size as u64;
                 }
@@ -1022,8 +1027,11 @@ pub fn load_device_const_pols<F: PrimeField64>(
                             setup.const_tree_size as u64,
                             proof_type,
                             only_first_gpu,
+                            setup.store_const_pols,
                         );
-                        offset_aggregation += setup.const_pols_size_packed as u64;
+                        if setup.store_const_pols {
+                            offset_aggregation += setup.const_pols_size_packed as u64;
+                        }
                         if load_tree {
                             offset_aggregation += setup.const_tree_size as u64;
                         }
@@ -1055,8 +1063,11 @@ pub fn load_device_const_pols<F: PrimeField64>(
                         setup.const_tree_size as u64,
                         proof_type,
                         only_first_gpu,
+                        setup.store_const_pols,
                     );
-                    offset_aggregation += setup.const_pols_size_packed as u64;
+                    if setup.store_const_pols {
+                        offset_aggregation += setup.const_pols_size_packed as u64;
+                    }
                     if load_tree {
                         offset_aggregation += setup.const_tree_size as u64;
                     }
@@ -1087,8 +1098,11 @@ pub fn load_device_const_pols<F: PrimeField64>(
                     setup.const_tree_size as u64,
                     proof_type,
                     only_first_gpu,
+                    setup.store_const_pols,
                 );
-                offset_aggregation += setup.const_pols_size_packed as u64;
+                if setup.store_const_pols {
+                    offset_aggregation += setup.const_pols_size_packed as u64;
+                }
                 if load_tree {
                     offset_aggregation += setup.const_tree_size as u64;
                 }
@@ -1116,6 +1130,7 @@ pub fn load_device_const_pols<F: PrimeField64>(
                 setup_vadcop_final.const_tree_size as u64,
                 proof_type,
                 only_first_gpu,
+                setup_vadcop_final.store_const_pols,
             );
             offset_aggregation += setup_vadcop_final.const_pols_size_packed as u64;
             if load_tree {
@@ -1144,6 +1159,7 @@ pub fn load_device_const_pols<F: PrimeField64>(
                 setup_vadcop_final_compressed.const_tree_size as u64,
                 proof_type,
                 only_first_gpu,
+                setup_vadcop_final_compressed.store_const_pols,
             );
             offset_aggregation += setup_vadcop_final_compressed.const_pols_size_packed as u64;
             if load_tree {

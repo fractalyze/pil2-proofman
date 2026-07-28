@@ -11,15 +11,15 @@ use crate::ProofmanResult;
 use crate::Setup;
 use crate::ProofType;
 
-pub struct PreLoadedConst {
+pub struct PreLoadedConstTree {
     pub airgroup_id: usize,
     pub air_id: usize,
     pub proof_type: ProofType,
 }
 
-impl PreLoadedConst {
+impl PreLoadedConstTree {
     pub fn new(airgroup_id: usize, air_id: usize, proof_type: ProofType) -> Self {
-        PreLoadedConst { airgroup_id, air_id, proof_type }
+        PreLoadedConstTree { airgroup_id, air_id, proof_type }
     }
 }
 
@@ -27,11 +27,36 @@ pub fn is_preload_fixed(
     airgroup_id: usize,
     air_id: usize,
     proof_type: &ProofType,
-    preloaded_const: &[PreLoadedConst],
+    preloaded_const: &[PreLoadedConstTree],
 ) -> bool {
     preloaded_const
         .iter()
         .any(|pc| pc.airgroup_id == airgroup_id && pc.air_id == air_id && pc.proof_type == *proof_type)
+}
+
+/// An air whose packed const pols are streamed from disk at proof time instead
+/// of kept GPU-resident. Resident by default; proofman lists the exceptions.
+#[derive(Clone)]
+pub struct NonResidentConstPolsGpu {
+    pub airgroup_id: usize,
+    pub air_id: usize,
+    pub proof_type: ProofType,
+}
+
+impl NonResidentConstPolsGpu {
+    pub fn new(airgroup_id: usize, air_id: usize, proof_type: ProofType) -> Self {
+        NonResidentConstPolsGpu { airgroup_id, air_id, proof_type }
+    }
+}
+
+/// True unless the air appears in `non_resident`.
+pub fn should_store_const_pols_gpu(
+    airgroup_id: usize,
+    air_id: usize,
+    proof_type: &ProofType,
+    non_resident: &[NonResidentConstPolsGpu],
+) -> bool {
+    !non_resident.iter().any(|nr| nr.airgroup_id == airgroup_id && nr.air_id == air_id && nr.proof_type == *proof_type)
 }
 
 pub struct SetupsVadcop<F: PrimeField64> {
@@ -65,16 +90,31 @@ impl<F: PrimeField64> SetupsVadcop<F> {
         global_info: &GlobalInfo,
         verify_constraints: bool,
         aggregation: bool,
-        preloaded_const: &[PreLoadedConst],
+        preloaded_const: &[PreLoadedConstTree],
+        non_resident_const_pols: &[NonResidentConstPolsGpu],
         gpu: bool,
     ) -> ProofmanResult<Self> {
         if aggregation {
-            let sctx_compressor =
-                SetupCtx::new(global_info, &ProofType::Compressor, verify_constraints, preloaded_const, gpu)?;
-            let sctx_recursive1 =
-                SetupCtx::new(global_info, &ProofType::Recursive1, verify_constraints, preloaded_const, gpu)?;
+            // Non-residency covers Compressor and Recursive1 only, hence the `&[]`
+            // for Recursive2 below.
+            let sctx_compressor = SetupCtx::new(
+                global_info,
+                &ProofType::Compressor,
+                verify_constraints,
+                preloaded_const,
+                non_resident_const_pols,
+                gpu,
+            )?;
+            let sctx_recursive1 = SetupCtx::new(
+                global_info,
+                &ProofType::Recursive1,
+                verify_constraints,
+                preloaded_const,
+                non_resident_const_pols,
+                gpu,
+            )?;
             let sctx_recursive2 =
-                SetupCtx::new(global_info, &ProofType::Recursive2, verify_constraints, preloaded_const, gpu)?;
+                SetupCtx::new(global_info, &ProofType::Recursive2, verify_constraints, preloaded_const, &[], gpu)?;
             let preallocate_final = is_preload_fixed(0, 0, &ProofType::VadcopFinal, preloaded_const);
             let setup_vadcop_final = Setup::new(
                 &global_info.get_setup_path("vadcop_final"),
@@ -84,6 +124,7 @@ impl<F: PrimeField64> SetupsVadcop<F> {
                 &ProofType::VadcopFinal,
                 verify_constraints,
                 preallocate_final,
+                true,
                 gpu,
                 None,
             )?;
@@ -96,6 +137,7 @@ impl<F: PrimeField64> SetupsVadcop<F> {
                 &ProofType::VadcopFinalCompressed,
                 verify_constraints,
                 false,
+                true,
                 gpu,
                 None,
             )?;
@@ -286,7 +328,8 @@ impl<F: PrimeField64> SetupRepository<F> {
         global_info: &GlobalInfo,
         setup_type: &ProofType,
         verify_constraints: bool,
-        preloaded_const: &[PreLoadedConst],
+        preloaded_const: &[PreLoadedConstTree],
+        non_resident_const_pols: &[NonResidentConstPolsGpu],
         gpu: bool,
     ) -> ProofmanResult<Self> {
         let mut setups = HashMap::new();
@@ -320,6 +363,8 @@ impl<F: PrimeField64> SetupRepository<F> {
         for (airgroup_id, air_group) in global_info.airs.iter().enumerate() {
             for (air_id, _) in air_group.iter().enumerate() {
                 let preallocate = is_preload_fixed(airgroup_id, air_id, setup_type, preloaded_const);
+                let store_const_pols =
+                    should_store_const_pols_gpu(airgroup_id, air_id, setup_type, non_resident_const_pols);
                 let setup_path = global_info.get_air_setup_path(airgroup_id, air_id, setup_type);
                 let setup = Setup::new(
                     &setup_path,
@@ -329,6 +374,7 @@ impl<F: PrimeField64> SetupRepository<F> {
                     setup_type,
                     verify_constraints,
                     preallocate,
+                    store_const_pols,
                     gpu,
                     Some(&global_info.get_air_setup_path(airgroup_id, 0, &ProofType::Recursive2)),
                 )?;
@@ -357,7 +403,11 @@ impl<F: PrimeField64> SetupRepository<F> {
                     max_prover_trace_size = max_prover_trace_size.max(total_prover_trace_size);
 
                     if setup.gpu {
-                        total_const_pols_size += setup.const_pols_size_packed;
+                        // Paired with load_device_const_pols, which must skip the same
+                        // airs when advancing its write offset.
+                        if store_const_pols {
+                            total_const_pols_size += setup.const_pols_size_packed;
+                        }
                         if preallocate {
                             total_const_tree_size += setup.const_tree_size;
                         }
@@ -416,10 +466,18 @@ impl<F: PrimeField64> SetupCtx<F> {
         global_info: &GlobalInfo,
         setup_type: &ProofType,
         verify_constraints: bool,
-        preloaded_const: &[PreLoadedConst],
+        preloaded_const: &[PreLoadedConstTree],
+        non_resident_const_pols: &[NonResidentConstPolsGpu],
         gpu: bool,
     ) -> ProofmanResult<Self> {
-        let setup_repository = SetupRepository::new(global_info, setup_type, verify_constraints, preloaded_const, gpu)?;
+        let setup_repository = SetupRepository::new(
+            global_info,
+            setup_type,
+            verify_constraints,
+            preloaded_const,
+            non_resident_const_pols,
+            gpu,
+        )?;
         let max_const_tree_size = setup_repository.max_const_tree_size;
         let max_const_size = setup_repository.max_const_size;
         let max_prover_contributions_size = setup_repository.max_prover_contributions_size;

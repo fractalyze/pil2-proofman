@@ -1591,6 +1591,7 @@ pub fn load_device_const_pols_c(
     const_tree_size: u64,
     proof_type: &str,
     only_first_gpu: bool,
+    store_const_pols: bool,
 ) {
     let const_filename_name = CString::new(const_filename).unwrap();
     let const_filename_ptr = const_filename_name.as_ptr() as *mut std::os::raw::c_char;
@@ -1613,6 +1614,7 @@ pub fn load_device_const_pols_c(
             const_tree_size,
             proof_type_ptr,
             only_first_gpu,
+            store_const_pols,
         );
     }
 }

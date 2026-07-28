@@ -634,8 +634,9 @@ extern "C" {
         constTreeSize: u64,
         proofType: *mut ::std::os::raw::c_char,
         onlyFirstGPU: bool,
+        storeConstPols: bool,
     );
-    
+
     pub fn load_device_setup(
         airgroupId: u64,
         airId: u64,

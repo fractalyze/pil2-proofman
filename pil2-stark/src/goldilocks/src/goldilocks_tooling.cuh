@@ -4,6 +4,7 @@
 #include <cstdint>
 #include <cassert>
 #include <atomic>
+#include <string>
 #ifdef USE_CUDA_GRAPH
 #include <memory>
 #include "cuda_graph_cache.cuh"
@@ -56,10 +57,13 @@ struct AirInstanceInfo {
     uint64_t airgroupId;
     uint64_t airId;
 
-    uint64_t const_pols_offset;
-    uint64_t const_tree_offset;
+    uint64_t const_pols_offset = 0;
+    uint64_t const_tree_offset = 0;
 
     bool stored_tree = false;
+    bool stored_const_pols = true;
+    std::string const_pols_path;
+    uint64_t const_pols_size_packed = 0;
 
     ExpressionsGPU *expressions_gpu;
     int64_t *opening_points;
@@ -330,11 +334,18 @@ struct StreamData{
     void *pSetupCtx;
     uint64_t *proofBuffer; 
     string proofFile;
-    uint64_t airgroupId; 
-    uint64_t airId; 
+    uint64_t airgroupId;
+    uint64_t airId;
     int64_t instanceId;
     string proofType;
     uint64_t arity;
+
+    // What this stream's aux trace actually caches for the identity above. Reuse was
+    // inferred from that identity alone, but initialize_instance adopts it while
+    // populating the const pols and NOT the const tree, so a following proof skipped a
+    // tree load it still needed. Two facts, because that subset is legitimately reusable.
+    bool constPolsLoaded = false; // ("const", false) unpacked + custom_fixed staged
+    bool constTreeLoaded = false; // ("const", true) holds this air's const tree
         
     bool recursive;
 
@@ -415,6 +426,21 @@ struct StreamData{
         proofType = "";
         recurserId = "";
         witnessResident = false;
+        constPolsLoaded = false;
+        constTreeLoaded = false;
+    }
+
+    // Adopt this const-cache identity. True if it was already the identity, meaning the
+    // two flags still describe the aux trace; on a change both are dropped.
+    bool adoptConstContext(uint64_t ag, uint64_t ai, const string &pt, const string &rid){
+        if (airgroupId == ag && airId == ai && proofType == pt && recurserId == rid) return true;
+        airgroupId = ag;
+        airId = ai;
+        proofType = pt;
+        recurserId = rid;
+        constPolsLoaded = false;
+        constTreeLoaded = false;
+        return false;
     }
 
     void free(){

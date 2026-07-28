@@ -94,6 +94,7 @@ pub struct Setup<F: PrimeField64> {
     pub n_cols: u64,
     pub n_operations_quotient: u64,
     pub preallocate: bool,
+    pub store_const_pols: bool,
     pub gpu: bool,
 }
 
@@ -122,6 +123,7 @@ impl<F: PrimeField64> Setup<F> {
         setup_type: &ProofType,
         verify_constraints: bool,
         preallocate: bool,
+        store_const_pols: bool,
         gpu: bool,
         starkinfo_source_path: Option<&PathBuf>,
     ) -> ProofmanResult<Self> {
@@ -407,6 +409,7 @@ impl<F: PrimeField64> Setup<F> {
             n_cols,
             n_operations_quotient,
             preallocate,
+            store_const_pols,
             gpu,
         })
     }

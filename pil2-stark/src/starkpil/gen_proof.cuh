@@ -81,7 +81,75 @@ void calculateWitnessSTD_gpu(SetupCtx& setupCtx, StepsParams& h_params, StepsPar
     updateAirgroupValueGPU(setupCtx, h_params, d_params, hint[0], hintFieldNameAirgroupVal, "numerator_direct", "denominator_direct", options1, options2, !prod, expressionsCtxGPU, d_expsArgs, d_destParams, pinned_exps_params, pinned_exps_args, countId, timer, stream);
 }
 
-void genProof_gpu(SetupCtx& setupCtx, gl64_t *d_aux_trace, gl64_t *d_const_pols, gl64_t *d_const_tree, char *constTreePath, uint32_t stream_id, uint64_t instance_id, DeviceCommitBuffers *d_buffers, AirInstanceInfo *air_instance_info, bool skipRecalculation, TimerGPU &timer, cudaStream_t stream, bool recursive = false, bool reuse_constants = false) {
+// Staging scratch for flows that do NOT hold a const tree (contributions / witness
+// calc), where ("const", true) is free. nullptr for resident airs. That region is
+// only distinct scratch when the air is not preallocated -- proofman rejects
+// preallocated+non-resident, re-checked here because getting it wrong is silent.
+static gl64_t *getNonResidentConstPolsScratch(SetupCtx *setupCtx, AirInstanceInfo *air_instance_info, gl64_t *d_aux_trace) {
+    if (air_instance_info->stored_const_pols) return nullptr;
+    if (setupCtx->starkInfo.preallocate) {
+        zklog.error("getNonResidentConstPolsScratch: air is preallocated; cannot stage non-resident const pols in the (\"const\", true) region");
+        exitProcess();
+    }
+    return d_aux_trace + setupCtx->starkInfo.mapOffsets[std::make_pair("const", true)];
+}
+
+// Staging scratch for flows that DO hold a const tree in ("const", true): use the
+// tail of ("cm1", true) instead. At call time that region holds only the raw stage-1
+// trace at its head (the extended trace comes later), so `reservedHead` elements are
+// kept clear. nullptr for resident airs.
+static gl64_t *getCm1TailConstPolsScratch(SetupCtx *setupCtx, AirInstanceInfo *air_instance_info, gl64_t *d_aux_trace, uint64_t reservedHead) {
+    if (air_instance_info->stored_const_pols) return nullptr;
+    uint64_t NExtended = 1 << setupCtx->starkInfo.starkStruct.nBitsExt;
+    uint64_t offsetCm1Extended = setupCtx->starkInfo.mapOffsets[std::make_pair("cm1", true)];
+    uint64_t cm1ExtendedSize = NExtended * setupCtx->starkInfo.mapSectionsN["cm1"];
+    if (air_instance_info->const_pols_size_packed + reservedHead > cm1ExtendedSize) {
+        zklog.error("getCm1TailConstPolsScratch: cm1-extended scratch too small for non-resident const pols (packed=" +
+                    std::to_string(air_instance_info->const_pols_size_packed) + ", reservedHead=" +
+                    std::to_string(reservedHead) + ", region=" + std::to_string(cm1ExtendedSize) + ")");
+        exitProcess();
+    }
+    return d_aux_trace + offsetCm1Extended + cm1ExtendedSize - air_instance_info->const_pols_size_packed;
+}
+
+// Unpack the packed const pols into d_const_pols_unpacked. Resident airs read the
+// d_constPols buffer; non-resident airs stream the packed file from disk into
+// d_packed_scratch first (which region is free differs per flow, hence the param).
+static void unpackConstPolsGPU(
+    DeviceCommitBuffers *d_buffers,
+    AirInstanceInfo *air_instance_info,
+    SetupCtx *setupCtx,
+    gl64_t *d_resident_const_pols,
+    gl64_t *d_packed_scratch,
+    Goldilocks::Element *d_const_pols_unpacked,
+    uint64_t N,
+    uint64_t streamId,
+    cudaStream_t stream,
+    TimerGPU &timer)
+{
+    gl64_t *packed_const_pols;
+    if (air_instance_info->stored_const_pols) {
+        packed_const_pols = d_resident_const_pols;
+    } else {
+        uint64_t packedSize = air_instance_info->const_pols_size_packed * sizeof(Goldilocks::Element);
+        load_and_copy_to_device_in_chunks(d_buffers, air_instance_info->const_pols_path.c_str(), (uint8_t*)d_packed_scratch, packedSize, streamId);
+        packed_const_pols = d_packed_scratch;
+    }
+
+    uint64_t nConstants = setupCtx->starkInfo.nConstants;
+    unpack_fixed(
+        (uint64_t*)packed_const_pols,
+        (uint64_t*)(packed_const_pols + 1),
+        (uint64_t*)(packed_const_pols + 1 + nConstants),
+        (uint64_t*)d_const_pols_unpacked,
+        nConstants, N, stream, timer);
+    CHECKCUDAERR(cudaGetLastError());
+}
+
+// reuse_constants: ("const", false) already holds this air's unpacked const pols.
+// reuse_const_tree: ("const", true) already holds its const tree. Tracked separately
+// because the witness-preload path leaves the former valid but never the latter.
+void genProof_gpu(SetupCtx& setupCtx, gl64_t *d_aux_trace, gl64_t *d_const_pols, gl64_t *d_const_tree, char *constTreePath, uint32_t stream_id, uint64_t instance_id, DeviceCommitBuffers *d_buffers, AirInstanceInfo *air_instance_info, bool skipRecalculation, TimerGPU &timer, cudaStream_t stream, bool recursive = false, bool reuse_constants = false, bool reuse_const_tree = false) {
     // Per-stream timer is reused: drop categories a prior aborted job left open.
     TimerResetCategoriesGPU(timer);
     TimerStartGPU(timer, STARK_GPU_PROOF);
@@ -145,12 +213,16 @@ void genProof_gpu(SetupCtx& setupCtx, gl64_t *d_aux_trace, gl64_t *d_const_pols,
     uint64_t offsetProofQueries = setupCtx.starkInfo.mapOffsets[std::make_pair("proof_queries", false)];
     uint64_t offsetConstPols = setupCtx.starkInfo.mapOffsets[std::make_pair("const", false)];
 
-    Goldilocks::Element *packed_const_pols = (Goldilocks::Element *)d_const_pols;
     Goldilocks::Element *d_const_pols_unpacked = (Goldilocks::Element *)d_aux_trace + offsetConstPols;
     if(!reuse_constants) {
-        uint64_t* d_num_packed_words = (uint64_t*) d_const_pols;
-        unpack_fixed(d_num_packed_words, (uint64_t*)(packed_const_pols + 1), (uint64_t*)(packed_const_pols + 1 + setupCtx.starkInfo.nConstants), (uint64_t*)d_const_pols_unpacked, setupCtx.starkInfo.nConstants, N, stream, timer);
-        CHECKCUDAERR(cudaGetLastError());
+        // The raw stage-1 trace occupies the head of ("cm1", true); keep it clear.
+        // Reserve the max of both layouts: gen_recursive_proof_gpu always copies
+        // N*nCols regardless of is_packed, so trusting the packed size alone would
+        // silently overlap the witness if a recursive air were ever packed.
+        uint64_t nCols = setupCtx.starkInfo.mapSectionsN["cm1"];
+        uint64_t rawTraceSize = N * std::max(air_instance_info->num_packed_words, nCols);
+        gl64_t *d_packed_scratch = getCm1TailConstPolsScratch(&setupCtx, air_instance_info, d_aux_trace, rawTraceSize);
+        unpackConstPolsGPU(d_buffers, air_instance_info, &setupCtx, d_const_pols, d_packed_scratch, d_const_pols_unpacked, N, stream_id, stream, timer);
     }
 
     StepsParams h_params = {
@@ -268,7 +340,7 @@ void genProof_gpu(SetupCtx& setupCtx, gl64_t *d_aux_trace, gl64_t *d_const_pols,
     uint64_t zi_offset = setupCtx.starkInfo.mapOffsets[std::make_pair("zi", true)];
     computeZerofier(h_params.aux_trace + zi_offset, setupCtx.starkInfo.starkStruct.nBits, setupCtx.starkInfo.starkStruct.nBitsExt, stream);
 
-    if (setupCtx.starkInfo.calculateFixedExtended && !reuse_constants) {
+    if (setupCtx.starkInfo.calculateFixedExtended && !reuse_const_tree) {
         TimerStartGPU(timer, FIXED_POLS_TREE);
         extendAndMerkelizeFixed(setupCtx, h_params.pConstPolsAddress, pConstPolsExtendedTreeAddress, timer, stream);
         TimerStopGPU(timer, FIXED_POLS_TREE);

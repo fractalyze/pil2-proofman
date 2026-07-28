@@ -4,7 +4,8 @@ use fields::{new_transcript, ExtensionField, GoldilocksQuinticExtension, PrimeFi
 use proofman_common::{
     calculate_fixed_tree, configured_num_threads, initialize_logger, load_const_pols, skip_prover_instance, CurveType,
     GlobalInfoAir, PolMap, RowInfo, DebugInfo, MemoryHandler, MemoryHandlerRecursive, MpiCtx, ProofmanOptions, Proof,
-    ProofCtx, ProofOptions, ProofType, RankInfo, SetupCtx, SetupsVadcop, VerboseMode, MAX_INSTANCES, PreLoadedConst,
+    ProofCtx, ProofOptions, ProofType, RankInfo, SetupCtx, SetupsVadcop, VerboseMode, MAX_INSTANCES,
+    PreLoadedConstTree, NonResidentConstPolsGpu, is_preload_fixed,
 };
 use colored::Colorize;
 use proofman_hints::aggregate_airgroupvals;
@@ -683,9 +684,10 @@ where
 
         let pctx = ProofCtx::<F>::create_ctx(proving_key_path, aggregation, verbose_mode, mpi_ctx, gpu)?;
 
-        let setups_aggregation = Arc::new(SetupsVadcop::<F>::new(&pctx.global_info, false, aggregation, &[], gpu)?);
+        let setups_aggregation =
+            Arc::new(SetupsVadcop::<F>::new(&pctx.global_info, false, aggregation, &[], &[], gpu)?);
 
-        let sctx: SetupCtx<F> = SetupCtx::new(&pctx.global_info, &ProofType::Basic, false, &[], gpu)?;
+        let sctx: SetupCtx<F> = SetupCtx::new(&pctx.global_info, &ProofType::Basic, false, &[], &[], gpu)?;
 
         ensure_gpu_available(gpu)?;
         if gpu {
@@ -1703,6 +1705,7 @@ where
             &ProofType::RecurserAggregator,
             false,
             false,
+            true,
             self.options.gpu,
             Some(&vadcop_final_stem),
         )?;
@@ -1785,6 +1788,7 @@ where
             setup.const_tree_size as u64,
             proof_type,
             false,
+            true,
         );
         Ok(())
     }
@@ -4539,9 +4543,54 @@ where
 
         let mut preloaded_const = Vec::new();
         if pctx.gpu {
-            preloaded_const.push(PreLoadedConst::new(0, 0, ProofType::Basic));
-            preloaded_const.push(PreLoadedConst::new(0, 0, ProofType::Recursive1));
-            preloaded_const.push(PreLoadedConst::new(0, 0, ProofType::Recursive2));
+            // Airgroup 0's Recursive2 tree is the one unconditional resident: every
+            // aggregation path ends up proving it, so streaming it per proof is never
+            // the right trade. Which Basic/Recursive1 trees to preallocate depends on
+            // the air mix and the card, so the caller chooses.
+            preloaded_const.push(PreLoadedConstTree::new(0, 0, ProofType::Recursive2));
+            for &(airgroup_id, air_id) in &options.preloaded_const_tree_gpu {
+                preloaded_const.push(PreLoadedConstTree::new(airgroup_id, air_id, ProofType::Basic));
+                preloaded_const.push(PreLoadedConstTree::new(airgroup_id, air_id, ProofType::Recursive1));
+            }
+        }
+
+        // Deactivation cascades to an air's Basic, Compressor and Recursive1 circuits;
+        // Recursive2 and VadcopFinal stay resident. One list drives both the sizing
+        // and the loading side so they cannot drift.
+        let non_resident_const_pols: Vec<NonResidentConstPolsGpu> = options
+            .non_resident_const_pols_gpu
+            .iter()
+            .flat_map(|&(airgroup_id, air_id)| {
+                [ProofType::Basic, ProofType::Compressor, ProofType::Recursive1]
+                    .map(|pt| NonResidentConstPolsGpu::new(airgroup_id, air_id, pt))
+            })
+            .collect();
+
+        // Both lists name airs by index, so a typo would otherwise be silently ignored.
+        for (option, airs) in [
+            ("non_resident_const_pols_gpu", &options.non_resident_const_pols_gpu),
+            ("preloaded_const_tree_gpu", &options.preloaded_const_tree_gpu),
+        ] {
+            for &(airgroup_id, air_id) in airs {
+                if pctx.global_info.airs.get(airgroup_id).and_then(|g| g.get(air_id)).is_none() {
+                    return Err(ProofmanError::InvalidConfiguration(format!(
+                        "{option} names air ({airgroup_id}, {air_id}), which does not exist in this proving key"
+                    )));
+                }
+            }
+        }
+
+        // The two lists must not overlap: under preallocate the ("const", true) region
+        // collapses to offset 0, so the disk-streaming scratch would overlap live data
+        // (see getNonResidentConstPolsScratch).
+        for nr in &non_resident_const_pols {
+            if is_preload_fixed(nr.airgroup_id, nr.air_id, &nr.proof_type, &preloaded_const) {
+                return Err(ProofmanError::InvalidConfiguration(format!(
+                    "air ({}, {}) is in both preloaded_const_tree_gpu and non_resident_const_pols_gpu; \
+                     a preallocated const tree rules out streaming that air's const pols",
+                    nr.airgroup_id, nr.air_id
+                )));
+            }
         }
 
         let sctx: Arc<SetupCtx<F>> = Arc::new(SetupCtx::new(
@@ -4549,6 +4598,7 @@ where
             &ProofType::Basic,
             options.verify_constraints,
             &preloaded_const,
+            &non_resident_const_pols,
             options.gpu,
         )?);
 
@@ -4557,8 +4607,43 @@ where
             options.verify_constraints,
             options.aggregation,
             &preloaded_const,
+            &non_resident_const_pols,
             options.gpu,
         )?);
+
+        // genProof stages the packed const pols in the tail of ("cm1", true), behind the
+        // raw stage-1 trace. If they do not both fit, getCm1TailConstPolsScratch aborts
+        // the process mid-proof -- reject the configuration here instead.
+        for nr in &non_resident_const_pols {
+            let setup = match nr.proof_type {
+                ProofType::Basic => Some(sctx.get_setup(nr.airgroup_id, nr.air_id)?),
+                ProofType::Compressor
+                    if options.aggregation && pctx.global_info.get_air_has_compressor(nr.airgroup_id, nr.air_id) =>
+                {
+                    Some(setups_vadcop.sctx_compressor.as_ref().unwrap().get_setup(nr.airgroup_id, nr.air_id)?)
+                }
+                ProofType::Recursive1 if options.aggregation => {
+                    Some(setups_vadcop.sctx_recursive1.as_ref().unwrap().get_setup(nr.airgroup_id, nr.air_id)?)
+                }
+                _ => None,
+            };
+            let Some(setup) = setup else { continue };
+            let n_cols = setup.stark_info.map_sections_n["cm1"];
+            let packed_words =
+                options.packed_info.get(&(nr.airgroup_id, nr.air_id)).map_or(0, |info| info.num_packed_words);
+            let n = 1u64 << setup.stark_info.stark_struct.n_bits;
+            let n_extended = 1u64 << setup.stark_info.stark_struct.n_bits_ext;
+            let needed = n * n_cols.max(packed_words) + setup.const_pols_size_packed as u64;
+            let available = n_extended * n_cols;
+            if needed > available {
+                let proof_type: &str = nr.proof_type.into();
+                return Err(ProofmanError::InvalidConfiguration(format!(
+                    "air ({}, {}) {proof_type} cannot have its const pols deactivated: staging them needs \
+                     {needed} elements of the cm1-extended region but only {available} are available",
+                    nr.airgroup_id, nr.air_id
+                )));
+            }
+        }
 
         pctx.set_weights(&sctx, &setups_vadcop)?;
 

@@ -596,28 +596,41 @@ void load_device_setup_gpu(uint64_t airgroupId, uint64_t airId, char *proofType,
     }
 }
 
-void load_device_const_pols_gpu(uint64_t airgroupId, uint64_t airId, uint64_t initial_offset, void *d_buffers_, char *constFilename, uint64_t constSize, char *constTreeFilename, uint64_t constTreeSize, char *proofType, bool onlyFirstGPU) {
+void load_device_const_pols_gpu(uint64_t airgroupId, uint64_t airId, uint64_t initial_offset, void *d_buffers_, char *constFilename, uint64_t constSize, char *constTreeFilename, uint64_t constTreeSize, char *proofType, bool onlyFirstGPU, bool storeConstPols) {
     DeviceCommitBuffers *d_buffers = (DeviceCommitBuffers *)d_buffers_;
     uint64_t sizeConstPols = constSize * sizeof(Goldilocks::Element);
-    
+
     std::pair<uint64_t, uint64_t> key = {airgroupId, airId};
 
     uint64_t const_pols_offset = initial_offset;
 
-    Goldilocks::Element *constPols = new Goldilocks::Element[constSize];
+    if (!storeConstPols) {
+        for(int i=0; i<d_buffers->n_gpus; ++i){
+            if (onlyFirstGPU && i > 0) break;
+            AirInstanceInfo* air_instance_info = d_buffers->air_instances[key][proofType][i];
+            air_instance_info->stored_const_pols = false;
+            air_instance_info->const_pols_path = std::string(constFilename);
+            air_instance_info->const_pols_size_packed = constSize;
+        }
+    } else {
+        Goldilocks::Element *constPols = new Goldilocks::Element[constSize];
 
-    loadFileParallel(constPols, constFilename, sizeConstPols);
-    
-    for(int i=0; i<d_buffers->n_gpus; ++i){
-        if (onlyFirstGPU && i > 0) break;
-        cudaSetDevice(d_buffers->my_gpu_ids[i]);
-        gl64_t *d_constPols = (strcmp(proofType, "basic") == 0) ? d_buffers->d_constPols[i] : d_buffers->d_constPolsAggregation[i];
-        CHECKCUDAERR(cudaMemcpy(d_constPols + const_pols_offset, constPols, sizeConstPols, cudaMemcpyHostToDevice));
-        AirInstanceInfo* air_instance_info = d_buffers->air_instances[key][proofType][i];
-        air_instance_info->const_pols_offset = const_pols_offset;
+        loadFileParallel(constPols, constFilename, sizeConstPols);
+
+        for(int i=0; i<d_buffers->n_gpus; ++i){
+            if (onlyFirstGPU && i > 0) break;
+            cudaSetDevice(d_buffers->my_gpu_ids[i]);
+            gl64_t *d_constPols = (strcmp(proofType, "basic") == 0) ? d_buffers->d_constPols[i] : d_buffers->d_constPolsAggregation[i];
+            CHECKCUDAERR(cudaMemcpy(d_constPols + const_pols_offset, constPols, sizeConstPols, cudaMemcpyHostToDevice));
+            AirInstanceInfo* air_instance_info = d_buffers->air_instances[key][proofType][i];
+            air_instance_info->stored_const_pols = true;
+            air_instance_info->const_pols_offset = const_pols_offset;
+            air_instance_info->const_pols_path = std::string(constFilename);
+            air_instance_info->const_pols_size_packed = constSize;
+        }
+
+        delete[] constPols;
     }
-
-    delete[] constPols;
 
     if (strcmp(constTreeFilename, "") != 0) {
         uint64_t sizeConstTree = constTreeSize * sizeof(Goldilocks::Element);
@@ -692,16 +705,16 @@ uint64_t gen_proof_gpu(void *pSetupCtx_, uint64_t airgroupId, uint64_t airId, ui
     AirInstanceInfo *air_instance_info = d_buffers->air_instances[key][proofType][gpuLocalId];
 
     // Basic proofs never alias: (airgroupId,airId) is unique per AIR, so the tuple suffices.
-    bool reuse_constants = d_buffers->streamsData[streamId].airgroupId == airgroupId && d_buffers->streamsData[streamId].airId == airId && d_buffers->streamsData[streamId].proofType == string("basic");
+    StreamData &sd = d_buffers->streamsData[streamId];
+    bool same_context = sd.adoptConstContext(airgroupId, airId, "basic", "");
+    bool reuse_constants = same_context && sd.constPolsLoaded;
+    bool reuse_const_tree = same_context && sd.constTreeLoaded;
 
-    d_buffers->streamsData[streamId].pSetupCtx = pSetupCtx_;
-    d_buffers->streamsData[streamId].proofBuffer = proofBuffer;
-    d_buffers->streamsData[streamId].proofFile = string(proofFile);
-    d_buffers->streamsData[streamId].airgroupId = airgroupId;
-    d_buffers->streamsData[streamId].airId = airId;
-    d_buffers->streamsData[streamId].instanceId = instanceId;
-    d_buffers->streamsData[streamId].proofType = "basic";
-    d_buffers->streamsData[streamId].witnessResident = false;
+    sd.pSetupCtx = pSetupCtx_;
+    sd.proofBuffer = proofBuffer;
+    sd.proofFile = string(proofFile);
+    sd.instanceId = instanceId;
+    sd.witnessResident = false;
 
     uint64_t offsetStage1 = setupCtx->starkInfo.mapOffsets[std::make_pair("cm1", false)];
     uint64_t offsetStage1Extended = setupCtx->starkInfo.mapOffsets[std::make_pair("cm1", true)];
@@ -762,16 +775,19 @@ uint64_t gen_proof_gpu(void *pSetupCtx_, uint64_t airgroupId, uint64_t airId, ui
         uint64_t offsetConstTree = setupCtx->starkInfo.mapOffsets[std::make_pair("const", true)];
         d_const_tree = d_aux_trace + offsetConstTree;
 
-        if (!reuse_constants && !setupCtx->starkInfo.calculateFixedExtended) {
+        if (!reuse_const_tree && !setupCtx->starkInfo.calculateFixedExtended) {
             load_and_copy_to_device_in_chunks(d_buffers, constTreePath, (uint8_t*)d_const_tree, sizeConstTree, streamId);
         }
     }
 
 
     proofman_sumcheck_set_context(instanceId, airgroupId, airId);
-    genProof_gpu(*setupCtx, d_aux_trace, d_const_pols, d_const_tree, constTreePath, streamId, instanceId, d_buffers, air_instance_info, skipRecalculation, timer, stream, false, reuse_constants);
-    cudaEventRecord(d_buffers->streamsData[streamId].end_event, stream);
-    d_buffers->streamsData[streamId].status = 2;
+    genProof_gpu(*setupCtx, d_aux_trace, d_const_pols, d_const_tree, constTreePath, streamId, instanceId, d_buffers, air_instance_info, skipRecalculation, timer, stream, false, reuse_constants, reuse_const_tree);
+    // Every region is populated now: loaded above, or unpacked/merkelized by genProof.
+    sd.constPolsLoaded = true;
+    sd.constTreeLoaded = true;
+    cudaEventRecord(sd.end_event, stream);
+    sd.status = 2;
     return streamId;
 }
 
@@ -798,15 +814,15 @@ uint64_t initialize_instance_gpu(void *pSetupCtx_, uint64_t airgroupId, uint64_t
     uint64_t nCols = setupCtx->starkInfo.mapSectionsN["cm1"];
     uint64_t sizeTrace = N * (setupCtx->starkInfo.mapSectionsN["cm1"]) * sizeof(Goldilocks::Element);
    
-    // Basic proofs never alias: (airgroupId,airId) is unique per AIR (see gen_proof_gpu).
-    bool reuse_constants = d_buffers->streamsData[streamId].airgroupId == airgroupId && d_buffers->streamsData[streamId].airId == airId && d_buffers->streamsData[streamId].proofType == string("basic");
+    // Leaves the unpacked const pols valid but never the const tree, so this path only
+    // ever asserts constPolsLoaded.
+    StreamData &sd = d_buffers->streamsData[streamId];
+    bool same_context = sd.adoptConstContext(airgroupId, airId, "basic", "");
+    bool reuse_constants = same_context && sd.constPolsLoaded;
 
-    d_buffers->streamsData[streamId].pSetupCtx = pSetupCtx_;
-    d_buffers->streamsData[streamId].airgroupId = airgroupId;
-    d_buffers->streamsData[streamId].airId = airId;
-    d_buffers->streamsData[streamId].proofType = "basic";
-    d_buffers->streamsData[streamId].instanceId = instanceId;
-    d_buffers->streamsData[streamId].witnessResident = false;
+    sd.pSetupCtx = pSetupCtx_;
+    sd.instanceId = instanceId;
+    sd.witnessResident = false;
 
     proofman_sumcheck_set_context(instanceId, airgroupId, airId);
 
@@ -859,11 +875,18 @@ uint64_t initialize_instance_gpu(void *pSetupCtx_, uint64_t airgroupId, uint64_t
     CHECKCUDAERR(cudaMemcpyAsync((uint8_t*)(d_aux_trace + offsetPublicInputs), aux_values, totalCopySize * sizeof(Goldilocks::Element), cudaMemcpyHostToDevice, stream));
     
     gl64_t *d_const_pols = d_buffers->d_constPols[gpuLocalId] + air_instance_info->const_pols_offset;
-    
+
     uint64_t offsetConstPols = setupCtx->starkInfo.mapOffsets[std::make_pair("const", false)];
     Goldilocks::Element *d_const_pols_unpacked = (Goldilocks::Element *)d_aux_trace + offsetConstPols;
-    unpack_fixed((uint64_t*)d_const_pols, (uint64_t*)(d_const_pols + 1), (uint64_t*)(d_const_pols + 1 + setupCtx->starkInfo.nConstants), (uint64_t*)d_const_pols_unpacked, setupCtx->starkInfo.nConstants, N, stream, timer);
-    CHECKCUDAERR(cudaGetLastError());
+    if(!reuse_constants) {
+        gl64_t *d_packed_scratch = getNonResidentConstPolsScratch(setupCtx, air_instance_info, d_aux_trace);
+        unpackConstPolsGPU(d_buffers, air_instance_info, setupCtx, d_const_pols, d_packed_scratch, d_const_pols_unpacked, N, streamId, stream, timer);
+        CHECKCUDAERR(cudaGetLastError());
+        // A non-resident air stages its packed pols through ("const", true), destroying
+        // any const tree cached there.
+        if (!air_instance_info->stored_const_pols) sd.constTreeLoaded = false;
+        sd.constPolsLoaded = true;
+    }
 
     uint64_t offsetCm1 = setupCtx->starkInfo.mapOffsets[std::make_pair("cm1", false)];
     if (d_buffers->packedTrace && air_instance_info->is_packed) {
@@ -1038,17 +1061,16 @@ uint64_t gen_recursive_proof_gpu(void *pSetupCtx_, uint64_t airgroupId, uint64_t
 
     // Recurser setups all share (0,0,"recursive2"), so recurser_id disambiguates them
     // (empty for normal recursion, where the tuple is already unique).
-    bool reuse_constants = d_buffers->streamsData[streamId].recurserId == string(recurser_id) && d_buffers->streamsData[streamId].airgroupId == airgroupId && d_buffers->streamsData[streamId].airId == airId && d_buffers->streamsData[streamId].proofType == string(proofType);
+    StreamData &sd = d_buffers->streamsData[streamId];
+    bool same_context = sd.adoptConstContext(airgroupId, airId, string(proofType), string(recurser_id));
+    bool reuse_constants = same_context && sd.constPolsLoaded;
+    bool reuse_const_tree = same_context && sd.constTreeLoaded;
 
-    d_buffers->streamsData[streamId].pSetupCtx = pSetupCtx_;
-    d_buffers->streamsData[streamId].proofBuffer = proofBuffer;
-    d_buffers->streamsData[streamId].proofFile = string(proof_file);
-    d_buffers->streamsData[streamId].recurserId = string(recurser_id);
-    d_buffers->streamsData[streamId].airgroupId = airgroupId;
-    d_buffers->streamsData[streamId].airId = airId;
-    d_buffers->streamsData[streamId].instanceId = instanceId;
-    d_buffers->streamsData[streamId].proofType = string(proofType);
-    d_buffers->streamsData[streamId].witnessResident = false;
+    sd.pSetupCtx = pSetupCtx_;
+    sd.proofBuffer = proofBuffer;
+    sd.proofFile = string(proof_file);
+    sd.instanceId = instanceId;
+    sd.witnessResident = false;
 
     uint64_t offsetStage1Extended = setupCtx->starkInfo.mapOffsets[std::make_pair("cm1", true)];
     copy_to_device_in_chunks(d_buffers, trace, (uint8_t*)(d_aux_trace + offsetStage1Extended), sizeTrace, streamId, timer);
@@ -1073,12 +1095,14 @@ uint64_t gen_recursive_proof_gpu(void *pSetupCtx_, uint64_t airgroupId, uint64_t
         uint64_t offsetConstTree = setupCtx->starkInfo.mapOffsets[std::make_pair("const", true)];
         d_const_tree = d_aux_trace + offsetConstTree;
 
-        if (!reuse_constants) {
+        if (!reuse_const_tree) {
             load_and_copy_to_device_in_chunks(d_buffers, constTreePath, (uint8_t*)d_const_tree, sizeConstTree, streamId);
         }
     }
 
-    genProof_gpu(*setupCtx, d_aux_trace, d_const_pols, d_const_tree, constTreePath, streamId, instanceId, d_buffers, air_instance_info, false, timer, stream, true, reuse_constants);
+    genProof_gpu(*setupCtx, d_aux_trace, d_const_pols, d_const_tree, constTreePath, streamId, instanceId, d_buffers, air_instance_info, false, timer, stream, true, reuse_constants, reuse_const_tree);
+    sd.constPolsLoaded = true;
+    sd.constTreeLoaded = true;
     cudaEventRecord(d_buffers->streamsData[streamId].end_event, stream);
     d_buffers->streamsData[streamId].status = 2;
     return streamId;
@@ -1107,10 +1131,9 @@ void calculate_const_tree_fixed_gpu(void *pSetupCtx_, uint64_t airgroupId, uint6
         return;
     }
 
-    d_buffers->streamsData[streamId].airgroupId = airgroupId;
-    d_buffers->streamsData[streamId].airId = airId;
-    d_buffers->streamsData[streamId].proofType = string(proofType);
-    d_buffers->streamsData[streamId].witnessResident = false;
+    StreamData &sd = d_buffers->streamsData[streamId];
+    sd.adoptConstContext(airgroupId, airId, string(proofType), "");
+    sd.witnessResident = false;
 
     gl64_t *d_const_pols = d_buffers->d_constPolsAggregation[gpuLocalId] + air_instance_info->const_pols_offset;
 
@@ -1121,15 +1144,21 @@ void calculate_const_tree_fixed_gpu(void *pSetupCtx_, uint64_t airgroupId, uint6
     uint64_t N = 1 << setupCtx->starkInfo.starkStruct.nBits;
     uint64_t offsetConstPols = setupCtx->starkInfo.mapOffsets[std::make_pair("const", false)];
     uint64_t offsetConstTree = setupCtx->starkInfo.mapOffsets[std::make_pair("const", true)];
-    Goldilocks::Element *packed_const_pols = (Goldilocks::Element *)d_const_pols;
     Goldilocks::Element *d_const_pols_unpacked = (Goldilocks::Element *)d_aux_trace + offsetConstPols;
-    uint64_t* d_num_packed_words = (uint64_t*) d_const_pols;
-    unpack_fixed(d_num_packed_words, (uint64_t*)(packed_const_pols + 1), (uint64_t*)(packed_const_pols + 1 + setupCtx->starkInfo.nConstants), (uint64_t*)d_const_pols_unpacked, setupCtx->starkInfo.nConstants, N, stream, timer);
-    
+    // ("const", true) is the tree destination here, so stage in the ("cm1", true) tail
+    // instead. No trace is loaded during this call, hence reservedHead = 0. Only reached
+    // for resident airs today: callers are vadcop_final/recurser, never non-resident.
+    gl64_t *d_packed_scratch = getCm1TailConstPolsScratch(setupCtx, air_instance_info, d_aux_trace, 0);
+    unpackConstPolsGPU(d_buffers, air_instance_info, setupCtx, d_const_pols, d_packed_scratch, d_const_pols_unpacked, N, streamId, stream, timer);
+
     gl64_t *d_const_tree = d_aux_trace + offsetConstTree;
     extendAndMerkelizeFixed(*setupCtx, d_const_pols_unpacked, (Goldilocks::Element *)d_const_tree, timer, stream);
     CHECKCUDAERR(cudaStreamSynchronize(stream));
-    d_buffers->streamsData[streamId].status = 3;
+    // Both regions are now populated for this identity. custom_fixed is not, so only
+    // claim constPolsLoaded when this setup has no custom commits.
+    sd.constPolsLoaded = setupCtx->starkInfo.mapTotalNCustomCommitsFixed == 0;
+    sd.constTreeLoaded = true;
+    sd.status = 3;
 }
 
 void tile_const_pols_gpu(void *pStarkinfo, void *pConstPols, char *constFile, void *pConstTree, char *constTreeFile, void *unified_buffer_gpu) {
@@ -1392,15 +1421,16 @@ uint64_t commit_witness_gpu(void *pSetupCtx_, void *params_, uint64_t instanceId
     uint32_t gpuId = d_buffers->streamsData[streamId].gpuId;
     uint32_t gpuLocalId = d_buffers->gpus_g2l[gpuId];
 
-    // Check reuse against the stream's prior context before it is overwritten below.
-    bool reuse_custom_fixed = d_buffers->streamsData[streamId].airgroupId == airgroupId && d_buffers->streamsData[streamId].airId == airId && d_buffers->streamsData[streamId].proofType == string("basic");
+    // Read the prior context before overwriting it. The "witness" tag (not "basic") is
+    // what stops a later proof here from assuming a const tree this path never loads.
+    StreamData &sd = d_buffers->streamsData[streamId];
+    bool reuse_custom_fixed = sd.airgroupId == airgroupId && sd.airId == airId && sd.proofType == string("basic")
+                              && sd.constPolsLoaded;
+    sd.adoptConstContext(airgroupId, airId, "witness", "");
 
-    d_buffers->streamsData[streamId].root = root;
-    d_buffers->streamsData[streamId].instanceId = instanceId;
-    d_buffers->streamsData[streamId].airgroupId = airgroupId;
-    d_buffers->streamsData[streamId].airId = airId;
-    d_buffers->streamsData[streamId].proofType = "witness";
-    d_buffers->streamsData[streamId].witnessResident = true;
+    sd.root = root;
+    sd.instanceId = instanceId;
+    sd.witnessResident = true;
 
     proofman_sumcheck_set_context(instanceId, airgroupId, airId);
 
@@ -1455,11 +1485,12 @@ uint64_t commit_witness_gpu(void *pSetupCtx_, void *params_, uint64_t instanceId
         uint64_t offsetConstPols = setupCtx->starkInfo.mapOffsets[std::make_pair("const", false)];
         gl64_t *d_const_pols = d_buffers->d_constPols[gpuLocalId] + air_instance_info->const_pols_offset;
         gl64_t *d_aux_trace = (gl64_t *)d_buffers->d_aux_trace[gpuLocalId][d_buffers->streamsData[streamId].localStreamId];
-        Goldilocks::Element *packed_const_pols = (Goldilocks::Element *)d_const_pols;
         Goldilocks::Element *d_const_pols_unpacked = (Goldilocks::Element *)d_aux_trace + offsetConstPols;
-        uint64_t* d_num_packed_words = (uint64_t*) d_const_pols;
-        unpack_fixed(d_num_packed_words, (uint64_t*)(packed_const_pols + 1), (uint64_t*)(packed_const_pols + 1 + setupCtx->starkInfo.nConstants), (uint64_t*)d_const_pols_unpacked, setupCtx->starkInfo.nConstants, N, stream, timer);
-        CHECKCUDAERR(cudaGetLastError());
+        gl64_t *d_packed_scratch = getNonResidentConstPolsScratch(setupCtx, air_instance_info, d_aux_trace);
+        unpackConstPolsGPU(d_buffers, air_instance_info, setupCtx, d_const_pols, d_packed_scratch, d_const_pols_unpacked, N, streamId, stream, timer);
+        // A non-resident air stages through ("const", true), destroying any tree there.
+        if (!air_instance_info->stored_const_pols) sd.constTreeLoaded = false;
+        sd.constPolsLoaded = true;
 
         if (setupCtx->starkInfo.mapTotalNCustomCommitsFixed > 0 && !reuse_custom_fixed) {
             Goldilocks::Element *pCustomCommitsFixedDst = (Goldilocks::Element *)d_aux_trace + setupCtx->starkInfo.mapOffsets[std::make_pair("custom_fixed", false)];

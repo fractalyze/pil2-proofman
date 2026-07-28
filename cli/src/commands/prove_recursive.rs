@@ -97,7 +97,10 @@ impl ProveRecursiveCmd {
         // under recursive1/, so loading as Basic looked for a nonexistent air/<Air>.so.
         // (Compressor with has_compressor unset still yields an empty setup, but a recursive
         // proof file never names that case here.)
-        let sctx: SetupCtx<Goldilocks> = SetupCtx::new(&pctx.global_info, proof_type, false, &[], self.gpu)?;
+        //
+        // Const pols are always GPU-resident here: prove-recursive proves one AIR, so
+        // there is nothing to evict.
+        let sctx: SetupCtx<Goldilocks> = SetupCtx::new(&pctx.global_info, proof_type, false, &[], &[], self.gpu)?;
 
         // Initialize the GPU (set_gpu_mode_c + init_gpu_setup_c). Without this the CUDA
         // context is not selected and check_device_memory_c (used by set_device_buffers)
@@ -192,7 +195,7 @@ impl ProveRecursiveCmd {
         // a compressor proof runs on a regular stream (recursive buffer sizes left 0).
         let load_tree = setup.preallocate;
         let mut setups_vadcop: SetupsVadcop<Goldilocks> =
-            SetupsVadcop::new(&pctx.global_info, false, false, &[], self.gpu)?;
+            SetupsVadcop::new(&pctx.global_info, false, false, &[], &[], self.gpu)?;
         setups_vadcop.total_const_pols_size = setup.const_pols_size_packed;
         if load_tree {
             setups_vadcop.total_const_tree_size = setup.const_tree_size;
@@ -226,6 +229,7 @@ impl ProveRecursiveCmd {
             setup.const_tree_size as u64,
             proof_type_str,
             false,
+            true,
         );
 
         // vadcop/instance/proof_type follow recursion.rs:293-298 for non-final proofs.
