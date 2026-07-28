@@ -397,13 +397,6 @@ pub(crate) fn ml_params(
     total_cols: usize,
     hash: proofman_multilinear::MlHashFamily,
 ) -> proofman_multilinear::MlParams {
-    // The PCS is WHIR. Its opening folds `k` variables per block (matching the
-    // prover's `WhirParams::default().folding_factor`), the domain halves once
-    // per block (rate drops `2^{1-k}`), and every block does `n_queries` uniform
-    // in-domain queries with no grinding (WHIR v1 placeholders — see whir.rs).
-    // We size `n_queries` from the WHIR query-phase soundness bound (soundcalc's
-    // `pcs/whir.py`, ported to `security.rs`).
-    const WHIR_FOLDING_FACTOR: usize = 4;
     const TARGET_SECURITY_BITS: usize = 128;
 
     // Rate: reuse the AIR's configured blowup (at least 1).
@@ -416,11 +409,7 @@ pub(crate) fn ml_params(
         let total: usize = step_bits.iter().sum();
         (step_bits, n_bits - total)
     } else {
-        // No univariate steps to mirror: uniform fallback, folding down to a
-        // small in-clear final polynomial.
-        let log_final_poly_len = 4usize.min(n_bits.saturating_sub(1));
-        let k = WHIR_FOLDING_FACTOR.min(n_bits.max(1));
-        (vec![k; whir_num_fold_rounds(n_bits, k, log_final_poly_len)], log_final_poly_len)
+        panic!("stark_struct.steps is empty or inconsistent with n_bits: steps={:?}, n_bits={}", stark_struct.steps, n_bits)
     };
     let n_rounds = fold_bits.len();
 
@@ -485,19 +474,6 @@ pub(crate) fn ml_params(
         univariate_skip_bits,
         hash,
     }
-}
-
-/// Number of WHIR fold blocks `R` — mirrors `proofman_multilinear`'s
-/// `num_fold_rounds` so `ml_params` sizes queries for the same schedule the
-/// prover uses (fold `k` vars per block until ≤ `log_final_poly_len` remain).
-fn whir_num_fold_rounds(n: usize, k: usize, log_final_poly_len: usize) -> usize {
-    assert!(k >= 1 && k <= n, "folding factor {k} out of range for {n} vars");
-    let target = n.saturating_sub(log_final_poly_len);
-    let mut r = target.div_ceil(k).max(1);
-    while r * k > n {
-        r -= 1;
-    }
-    r.max(1)
 }
 
 /// Build the multilinear prover's fixed-column commitment `<AIR>.mlconst.bin`
