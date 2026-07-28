@@ -31,7 +31,7 @@ struct StarksBackend {
     void (*get_stream_proofs)(void *d_buffers_);
     void (*get_stream_proofs_non_blocking)(void *d_buffers_);
     void (*get_stream_id_proof)(void *d_buffers_, uint64_t streamId);
-    uint64_t (*gen_recursive_proof)(void *pSetupCtx, uint64_t airgroupId, uint64_t airId, uint64_t instanceId, void* witness, void* aux_trace, void *pConstPols, void *pConstTree, void* pPublicInputs, uint64_t* proofBuffer, char *proof_file, bool vadcop, void *d_buffers, char *constPolsPath, char *constTreePath, char *proofType, bool force_recursive_stream);
+    uint64_t (*gen_recursive_proof)(void *pSetupCtx, uint64_t airgroupId, uint64_t airId, uint64_t instanceId, void* witness, void* aux_trace, void *pConstPols, void *pConstTree, void* pPublicInputs, uint64_t* proofBuffer, char *proof_file, bool vadcop, void *d_buffers, char *constPolsPath, char *constTreePath, char *proofType, bool force_recursive_stream, char *recurser_id);
     void *(*gen_recursive_proof_final)(void *pSetupCtx, uint64_t airgroupId, uint64_t airId, uint64_t instanceId, void* witness, void* aux_trace, void *pConstPols, void *pConstTree, void* pPublicInputs, char* proof_file, uint64_t proverBufferSize, void* d_buffers);
     void (*calculate_const_tree_fixed)(void *pSetupCtx_, uint64_t airgroupId, uint64_t airId, char *proofType, void *d_buffers_);
 
@@ -61,6 +61,8 @@ struct StarksBackend {
     void (*acquire_first_gpu_buffer)(void *d_buffers_);
     void (*release_first_gpu_buffer)(void *d_buffers_);
     uint32_t (*is_first_gpu_buffer_borrowed)(void *d_buffers_);
+    uint32_t (*get_first_gpu_id)(void *d_buffers_);
+    void *(*get_first_gpu_buffer)(void *d_buffers_);
     void *(*get_unified_buffer_gpu_for_recursivef)(void *d_buffers_, void *d_buffers_recursivef_);
     void (*alloc_fixed_pols_buffer_gpu)(void *d_buffers_);
     void (*free_fixed_pols_buffer_gpu)(void *d_buffers_);

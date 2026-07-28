@@ -49,6 +49,12 @@ extern "C" {
         zkey_file: *const ::std::os::raw::c_char,
     ) -> ::std::os::raw::c_int;
 
+    pub fn plonk_circuit_stats_c(
+        r1cs_file: *const ::std::os::raw::c_char,
+        n_constraints: *mut u64,
+        n_additions: *mut u64,
+    ) -> ::std::os::raw::c_int;
+
     // SetupCtx
     // ========================================================================================
     pub fn n_hints_by_name(
@@ -463,8 +469,9 @@ extern "C" {
         constTreePath: *mut ::std::os::raw::c_char,
         proofType: *mut ::std::os::raw::c_char,
         force_recursive_stream: bool,
+        recurser_id: *mut ::std::os::raw::c_char,
     ) -> u64;
-    
+
     pub fn calculate_const_tree_fixed(
         pSetupCtx_: *mut ::std::os::raw::c_void,
         airgroupId: u64,
@@ -689,6 +696,8 @@ extern "C" {
     pub fn acquire_first_gpu_buffer(d_buffers: *mut ::std::os::raw::c_void);
     pub fn release_first_gpu_buffer(d_buffers: *mut ::std::os::raw::c_void);
     pub fn is_first_gpu_buffer_borrowed(d_buffers: *mut ::std::os::raw::c_void) -> u32;
+    pub fn get_first_gpu_id(d_buffers: *mut ::std::os::raw::c_void) -> u32;
+    pub fn get_first_gpu_buffer(d_buffers: *mut ::std::os::raw::c_void) -> *mut ::std::os::raw::c_void;
     pub fn get_unified_buffer_gpu_for_recursivef(d_buffers: *mut ::std::os::raw::c_void, d_buffers_recursivef: *mut ::std::os::raw::c_void) -> *mut ::std::os::raw::c_void;
 
     pub fn alloc_fixed_pols_buffer_gpu(d_buffers: *mut ::std::os::raw::c_void);
