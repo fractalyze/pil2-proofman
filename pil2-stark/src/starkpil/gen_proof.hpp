@@ -119,18 +119,22 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
     if(recursive) {
         Goldilocks::Element verkey[HASH_SIZE];
         starks.treesGL[setupCtx.starkInfo.nStages + 1]->getRoot(verkey);
-        starks.addTranscript(transcript, &verkey[0], HASH_SIZE);
+        pil2DumpAppendU64(dumpPrefix + "absorbs", &verkey[0], HASH_SIZE);
+    starks.addTranscript(transcript, &verkey[0], HASH_SIZE);
         if(setupCtx.starkInfo.nPublics > 0) {
             if(!setupCtx.starkInfo.starkStruct.hashCommits) {
-                starks.addTranscriptGL(transcript, &params.publicInputs[0], setupCtx.starkInfo.nPublics);
+                pil2DumpAppendU64(dumpPrefix + "absorbs", &params.publicInputs[0], setupCtx.starkInfo.nPublics);
+    starks.addTranscriptGL(transcript, &params.publicInputs[0], setupCtx.starkInfo.nPublics);
             } else {
                 Goldilocks::Element hash[HASH_SIZE];
                 starks.calculateHash(hash, &params.publicInputs[0], setupCtx.starkInfo.nPublics);
-                starks.addTranscript(transcript, hash, HASH_SIZE);
+                pil2DumpAppendU64(dumpPrefix + "absorbs", hash, HASH_SIZE);
+    starks.addTranscript(transcript, hash, HASH_SIZE);
             }
         }
     } else {
-        starks.addTranscript(transcript, globalChallenge, FIELD_EXTENSION);
+        pil2DumpAppendU64(dumpPrefix + "absorbs", globalChallenge, FIELD_EXTENSION);
+    starks.addTranscript(transcript, globalChallenge, FIELD_EXTENSION);
         pil2DumpU64(dumpPrefix + "global_challenge", globalChallenge, FIELD_EXTENSION);
     }
 
@@ -145,7 +149,8 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
     calculateWitnessExpr(setupCtx, params, expressionsCtx);
     if(recursive) {
         starks.commitStage(1, params.trace, params.aux_trace, proof, ntt);
-        starks.addTranscript(transcript, &proof.proof.roots[0][0], HASH_SIZE);
+        pil2DumpAppendU64(dumpPrefix + "absorbs", &proof.proof.roots[0][0], HASH_SIZE);
+    starks.addTranscript(transcript, &proof.proof.roots[0][0], HASH_SIZE);
     } else {
         starks.commitStage(1, params.trace, params.aux_trace, proof, ntt, &params.aux_trace[setupCtx.starkInfo.mapOffsets[std::make_pair("buff_helper_fft_1", false)]]);
     }
@@ -195,13 +200,15 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
                             setupCtx.starkInfo.mapSectionsN["cm2"]);
         }
     }
+    pil2DumpAppendU64(dumpPrefix + "absorbs", &proof.proof.roots[1][0], HASH_SIZE);
     starks.addTranscript(transcript, &proof.proof.roots[1][0], HASH_SIZE);
 
     uint64_t a = 0;
     for(uint64_t i = 0; i < setupCtx.starkInfo.airValuesMap.size(); i++) {
         if(setupCtx.starkInfo.airValuesMap[i].stage == 1) a++;
         if(setupCtx.starkInfo.airValuesMap[i].stage == 2) {
-            starks.addTranscript(transcript, &params.airValues[a], FIELD_EXTENSION);
+            pil2DumpAppendU64(dumpPrefix + "absorbs", &params.airValues[a], FIELD_EXTENSION);
+    starks.addTranscript(transcript, &params.airValues[a], FIELD_EXTENSION);
             a += 3;
         }
     }
@@ -243,6 +250,7 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
     }
 
     pil2DumpU64(dumpPrefix + "rootQ", &proof.proof.roots[setupCtx.starkInfo.nStages][0], HASH_SIZE);
+    pil2DumpAppendU64(dumpPrefix + "absorbs", &proof.proof.roots[setupCtx.starkInfo.nStages][0], HASH_SIZE);
     starks.addTranscript(transcript, &proof.proof.roots[setupCtx.starkInfo.nStages][0], HASH_SIZE);
     TimerStopAndLog(STARK_STEP_Q);
 
@@ -296,11 +304,13 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
         }
     }
     if(!setupCtx.starkInfo.starkStruct.hashCommits) {
-        starks.addTranscriptGL(transcript, params.evals, setupCtx.starkInfo.evMap.size() * FIELD_EXTENSION);
+        pil2DumpAppendU64(dumpPrefix + "absorbs", params.evals, setupCtx.starkInfo.evMap.size() * FIELD_EXTENSION);
+    starks.addTranscriptGL(transcript, params.evals, setupCtx.starkInfo.evMap.size() * FIELD_EXTENSION);
     } else {
         Goldilocks::Element hash[HASH_SIZE];
         starks.calculateHash(hash, params.evals, setupCtx.starkInfo.evMap.size() * FIELD_EXTENSION);
-        starks.addTranscript(transcript, hash, HASH_SIZE);
+        pil2DumpAppendU64(dumpPrefix + "absorbs", hash, HASH_SIZE);
+    starks.addTranscript(transcript, hash, HASH_SIZE);
     }
     // Challenges for FRI polynomial
     for (uint64_t i = 0; i < setupCtx.starkInfo.challengesMap.size(); i++)
@@ -338,16 +348,19 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
         if (step < setupCtx.starkInfo.starkStruct.steps.size() - 1)
         {
             FRI<Goldilocks::Element>::merkelize(step, proof, friPol, starks.treesFRI[step], currentBits, setupCtx.starkInfo.starkStruct.steps[step + 1].nBits);
-            starks.addTranscript(transcript, &proof.proof.fri.treesFRI[step].root[0], HASH_SIZE);
+            pil2DumpAppendU64(dumpPrefix + "absorbs", &proof.proof.fri.treesFRI[step].root[0], HASH_SIZE);
+    starks.addTranscript(transcript, &proof.proof.fri.treesFRI[step].root[0], HASH_SIZE);
         }
         else
         {
             if(!setupCtx.starkInfo.starkStruct.hashCommits) {
-                starks.addTranscriptGL(transcript, friPol, (1 << setupCtx.starkInfo.starkStruct.steps[step].nBits) * FIELD_EXTENSION);
+                pil2DumpAppendU64(dumpPrefix + "absorbs", friPol, (1 << setupCtx.starkInfo.starkStruct.steps[step].nBits) * FIELD_EXTENSION);
+    starks.addTranscriptGL(transcript, friPol, (1 << setupCtx.starkInfo.starkStruct.steps[step].nBits) * FIELD_EXTENSION);
             } else {
                 Goldilocks::Element hash[HASH_SIZE];
                 starks.calculateHash(hash, friPol, (1 << setupCtx.starkInfo.starkStruct.steps[step].nBits) * FIELD_EXTENSION);
-                starks.addTranscript(transcript, hash, HASH_SIZE);
+                pil2DumpAppendU64(dumpPrefix + "absorbs", hash, HASH_SIZE);
+    starks.addTranscript(transcript, hash, HASH_SIZE);
             } 
             
         }
@@ -372,7 +385,9 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
     runGrinding(nonce, (uint64_t *)challenge, setupCtx.starkInfo.starkStruct.powBits);
 
     TranscriptGL transcriptPermutation(setupCtx.starkInfo.starkStruct.transcriptArity, setupCtx.starkInfo.starkStruct.merkleTreeCustom);
+    pil2DumpAppendU64(dumpPrefix + "absorbs", challenge, FIELD_EXTENSION);
     starks.addTranscriptGL(transcriptPermutation, challenge, FIELD_EXTENSION);
+    pil2DumpAppendU64(dumpPrefix + "absorbs", (Goldilocks::Element *)&nonce, 1);
     starks.addTranscriptGL(transcriptPermutation, (Goldilocks::Element *)&nonce, 1);
     transcriptPermutation.getPermutations(friQueries, setupCtx.starkInfo.starkStruct.nQueries, setupCtx.starkInfo.starkStruct.steps[0].nBits);
 

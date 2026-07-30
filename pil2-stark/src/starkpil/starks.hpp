@@ -2,6 +2,7 @@
 #define STARKS_HPP
 
 #include <algorithm>
+#include "pil2_dump.hpp"
 #include <cmath>
 #include "utils.hpp"
 #include "timer.hpp"

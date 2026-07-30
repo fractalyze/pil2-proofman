@@ -29,3 +29,15 @@ inline void pil2DumpU64(const std::string& name, const void* data, size_t count)
     fwrite(data, sizeof(uint64_t), count, f);
     fclose(f);
 }
+
+inline void pil2DumpAppendU64(const std::string& name, const void* data, size_t count) {
+    const char* dir = std::getenv("PIL2_DUMP_DIR");
+    if (!dir) return;
+    std::string p = std::string(dir) + "/" + name + ".log";
+    FILE* f = fopen(p.c_str(), "ab");
+    if (!f) return;
+    uint64_t n = count;
+    fwrite(&n, sizeof(uint64_t), 1, f);
+    fwrite(data, sizeof(uint64_t), count, f);
+    fclose(f);
+}
