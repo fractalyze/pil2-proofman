@@ -147,6 +147,15 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
                         (1ULL << setupCtx.starkInfo.starkStruct.nBits));
     }
     calculateWitnessExpr(setupCtx, params, expressionsCtx);
+    // Recursive proves: dump the committed stage-1 witness HERE — after
+    // calculateWitnessExpr fills its expression columns into params.trace
+    // (extendAndMerkelize commits `trace` directly) and before the pooled
+    // witness buffer can be reclaimed by a concurrent prove post-commit.
+    if (!pil2DumpTag().empty() && setupCtx.starkInfo.mapSectionsN.count("cm1")) {
+        pil2DumpU64(dumpPrefix + "trace_post", params.trace,
+                    setupCtx.starkInfo.mapSectionsN["cm1"] *
+                        (1ULL << setupCtx.starkInfo.starkStruct.nBits));
+    }
     if(recursive) {
         starks.commitStage(1, params.trace, params.aux_trace, proof, ntt);
         pil2DumpAppendU64(dumpPrefix + "absorbs", &proof.proof.roots[0][0], HASH_SIZE);
@@ -155,7 +164,10 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
         starks.commitStage(1, params.trace, params.aux_trace, proof, ntt, &params.aux_trace[setupCtx.starkInfo.mapOffsets[std::make_pair("buff_helper_fft_1", false)]]);
     }
     pil2DumpU64(dumpPrefix + "root1", &proof.proof.roots[0][0], HASH_SIZE);
-    if (setupCtx.starkInfo.mapSectionsN.count("cm1")) {
+    // Basic proves: the async hint-computed columns settle by commit time,
+    // so post-commit params.trace is the committed witness (recursive proves
+    // dumped theirs above, pre-commit, while they still own the buffer).
+    if (pil2DumpTag().empty() && setupCtx.starkInfo.mapSectionsN.count("cm1")) {
         pil2DumpU64(dumpPrefix + "trace_post", params.trace,
                     setupCtx.starkInfo.mapSectionsN["cm1"] *
                         (1ULL << setupCtx.starkInfo.starkStruct.nBits));
