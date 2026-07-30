@@ -131,6 +131,7 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
         }
     } else {
         starks.addTranscript(transcript, globalChallenge, FIELD_EXTENSION);
+        pil2DumpU64(dumpPrefix + "global_challenge", globalChallenge, FIELD_EXTENSION);
     }
 
     TimerStopAndLog(STARK_STEP_0);
