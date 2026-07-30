@@ -872,8 +872,10 @@ uint64_t gen_recursive_proof_cpu(void *pSetupCtx, uint64_t airgroupId, uint64_t 
         .pCustomCommitsFixed = nullptr,
     };
 
+    pil2DumpTag() = string(proofType) + "_";
     genProof(*setupCtx, airgroupId, airId, instanceId, params, nullptr, proofBuffer, string(proof_file), true);
-    
+    pil2DumpTag().clear();
+
     return 0;
 }
 

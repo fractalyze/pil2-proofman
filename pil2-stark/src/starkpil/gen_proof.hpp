@@ -79,7 +79,7 @@ void genProof(SetupCtx& setupCtx, uint64_t airgroupId, uint64_t airId, uint64_t 
     // One dump-name prefix per AIR instance so multi-instance proves never
     // overwrite each other's files; the stage-1 trace and publics let a
     // consumer replay the whole pipeline from the same witness.
-    std::string dumpPrefix = "ag" + std::to_string(airgroupId) + "_air" +
+    std::string dumpPrefix = pil2DumpTag() + "ag" + std::to_string(airgroupId) + "_air" +
         std::to_string(airId) + "_inst" + std::to_string(instanceId) + "_";
     if (std::getenv("PIL2_DUMP_DIR")) {
         if (setupCtx.starkInfo.mapSectionsN.count("cm1")) {

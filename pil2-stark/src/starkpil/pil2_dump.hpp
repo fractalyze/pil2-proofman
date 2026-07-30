@@ -9,6 +9,16 @@
 #include <cstdlib>
 #include <string>
 
+// The recursion prover reuses genProof with the ORIGINAL airgroup/air/instance
+// ids, so without a tag a compressor/recursive1/recursive2/vadcop_final prove
+// overwrites the inner instance's files (and each other's). gen_recursive_proof
+// sets this to "<proofType>_" around its genProof call; the basic path leaves
+// it empty so inner dump names stay stable for existing consumers.
+inline std::string& pil2DumpTag() {
+    static thread_local std::string tag;
+    return tag;
+}
+
 inline void pil2DumpU64(const std::string& name, const void* data, size_t count) {
     const char* dir = std::getenv("PIL2_DUMP_DIR");
     if (!dir) return;
