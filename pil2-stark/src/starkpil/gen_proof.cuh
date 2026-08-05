@@ -9,6 +9,7 @@
 #include "starks_gpu.cuh"
 #include "hints.cuh"
 #include "gpu_timer.cuh"
+#include "pil2_dump_gpu.cuh"
 #ifdef USE_CUDA_GRAPH
 #include "cuda_graph_cache.cuh"
 #endif
@@ -89,6 +90,10 @@ void genProof_gpu(SetupCtx& setupCtx, gl64_t *d_aux_trace, gl64_t *d_const_pols,
     cudagraph::current() = d_buffers->streamsData[stream_id].graph_cache.get();
     cudagraph::aggressive() = recursive;
     cudaGetLastError();
+    // Capture mode: the dump hooks synchronize and copy mid-flow, which
+    // cannot happen inside a graph capture, and a graph-cached launch would
+    // skip the code paths they live on.
+    if (std::getenv("PIL2_DUMP_DIR")) cudagraph::current() = nullptr;
 #endif
 
     uint64_t countId = 0;
@@ -204,13 +209,55 @@ void genProof_gpu(SetupCtx& setupCtx, gl64_t *d_aux_trace, gl64_t *d_const_pols,
         } 
     }
     TimerStopGPU(timer, STARK_STEP_0);
-    
+
+    // Mirrors the CPU genProof hooks (gen_proof.hpp): one prefix per AIR
+    // instance; the trace + publics + seed let a consumer replay the whole
+    // pipeline from the same witness.
+    std::string dumpPrefix = pil2DumpTag() + "ag" + std::to_string(air_instance_info->airgroupId) +
+        "_air" + std::to_string(air_instance_info->airId) + "_inst" + std::to_string(instance_id) + "_";
+    if (pil2DumpWants(dumpPrefix)) {
+        if (setupCtx.starkInfo.mapSectionsN.count("cm1")) {
+            pil2DumpU64Gpu(dumpPrefix + "trace", h_params.trace,
+                           setupCtx.starkInfo.mapSectionsN["cm1"] * N, stream);
+        }
+        pil2DumpU64Gpu(dumpPrefix + "publics", h_params.publicInputs,
+                       setupCtx.starkInfo.nPublics, stream);
+        if (!recursive) {
+            pil2DumpU64Gpu(dumpPrefix + "global_challenge", d_challenge,
+                           FIELD_EXTENSION, stream);
+        }
+        std::string mp = std::string(std::getenv("PIL2_DUMP_DIR")) + "/" + dumpPrefix + "meta.json";
+        FILE* mf = fopen(mp.c_str(), "w");
+        if (mf) {
+            fprintf(mf, "{\n  \"airgroup_id\": %lu,\n  \"air_id\": %lu,\n  \"instance_id\": %lu,\n"
+                        "  \"n_bits\": %lu,\n  \"n_bits_ext\": %lu\n}\n",
+                    air_instance_info->airgroupId, air_instance_info->airId, instance_id,
+                    setupCtx.starkInfo.starkStruct.nBits,
+                    setupCtx.starkInfo.starkStruct.nBitsExt);
+            fclose(mf);
+        }
+    }
+
     TimerStartGPU(timer, STARK_COMMIT_STAGE_1);
     calculateWitnessExpr_gpu(setupCtx, h_params, d_params, air_instance_info->expressions_gpu, d_expsArgs, d_destParams, pinned_exps_params, pinned_exps_args, countId, timer, stream);
     if (recursive) {
         commitStage_inplace(1, setupCtx, starks.treesGL, (gl64_t*) h_params.trace, (gl64_t*)h_params.aux_trace, d_transcript, false, timer, stream);
     } else {
         commitStage_inplace(1, setupCtx, starks.treesGL, (gl64_t*) h_params.trace, (gl64_t*)h_params.aux_trace, nullptr, skipRecalculation, timer, stream);
+    }
+    if (std::getenv("PIL2_DUMP_DIR")) {
+        // Post-commit trace = the settled stage-1 witness (async hint columns
+        // included), same landmark as the CPU basic path.
+        if (setupCtx.starkInfo.mapSectionsN.count("cm1")) {
+            pil2DumpU64Gpu(dumpPrefix + "trace_post", h_params.trace,
+                           setupCtx.starkInfo.mapSectionsN["cm1"] * N, stream);
+        }
+        auto k1e = std::make_pair(std::string("cm1"), true);
+        if (setupCtx.starkInfo.mapOffsets.count(k1e)) {
+            pil2DumpU64Gpu(dumpPrefix + "cm1_ext",
+                           h_params.aux_trace + setupCtx.starkInfo.mapOffsets[k1e],
+                           setupCtx.starkInfo.mapSectionsN["cm1"] * NExtended, stream);
+        }
     }
     TimerStopGPU(timer, STARK_COMMIT_STAGE_1);
 
@@ -231,6 +278,14 @@ void genProof_gpu(SetupCtx& setupCtx, gl64_t *d_aux_trace, gl64_t *d_const_pols,
     
     TimerStartGPU(timer, STARK_COMMIT_STAGE_2);
     commitStage_inplace(2, setupCtx, starks.treesGL, (gl64_t*)h_params.trace, (gl64_t*)h_params.aux_trace, d_transcript, false, timer, stream);
+    {
+        auto k2 = std::make_pair(std::string("cm2"), false);
+        if (setupCtx.starkInfo.mapOffsets.count(k2) && setupCtx.starkInfo.mapSectionsN.count("cm2")) {
+            pil2DumpU64Gpu(dumpPrefix + "cm2_base",
+                           h_params.aux_trace + setupCtx.starkInfo.mapOffsets[k2],
+                           N * setupCtx.starkInfo.mapSectionsN["cm2"], stream);
+        }
+    }
 
     uint64_t a = 0;
     for(uint64_t i = 0; i < setupCtx.starkInfo.airValuesMap.size(); i++) {
@@ -260,7 +315,21 @@ void genProof_gpu(SetupCtx& setupCtx, gl64_t *d_aux_trace, gl64_t *d_const_pols,
     TimerStartGPU(timer, STARK_QUOTIENT_POLYNOMIAL);
     calculateExpressionQ(setupCtx, air_instance_info->expressions_gpu, d_params, (Goldilocks::Element *)(h_params.aux_trace + setupCtx.starkInfo.mapOffsets[std::make_pair("q", true)]), d_expsArgs, d_destParams, pinned_exps_params, pinned_exps_args, countId, timer, stream);
     TimerStopGPU(timer, STARK_QUOTIENT_POLYNOMIAL);
+    if (setupCtx.starkInfo.mapOffsets.count(std::make_pair(std::string("q"), true))) {
+        pil2DumpU64Gpu(dumpPrefix + "q_ext",
+                       h_params.aux_trace + setupCtx.starkInfo.mapOffsets[std::make_pair(std::string("q"), true)],
+                       NExtended * setupCtx.starkInfo.qDim, stream);
+    }
     commitStage_inplace(setupCtx.starkInfo.nStages + 1, setupCtx, starks.treesGL, (gl64_t *)h_params.trace, (gl64_t *)h_params.aux_trace, d_transcript, false, timer, stream);
+    {
+        std::string qName = "cm" + std::to_string(setupCtx.starkInfo.nStages + 1);
+        auto qKey = std::make_pair(qName, true);
+        if (setupCtx.starkInfo.mapOffsets.count(qKey) && setupCtx.starkInfo.mapSectionsN.count(qName)) {
+            pil2DumpU64Gpu(dumpPrefix + "quotient_cm",
+                           h_params.aux_trace + setupCtx.starkInfo.mapOffsets[qKey],
+                           NExtended * setupCtx.starkInfo.mapSectionsN[qName], stream);
+        }
+    }
     TimerStopGPU(timer, STARK_STEP_Q);
     TimerStartGPU(timer, STARK_STEP_EVALS);
     
@@ -290,6 +359,23 @@ void genProof_gpu(SetupCtx& setupCtx, gl64_t *d_aux_trace, gl64_t *d_const_pols,
         evmap_inplace(setupCtx, h_params, count++, openingPoints.size(), openingPoints.data(), air_instance_info, (Goldilocks::Element*)d_LEv, offset_helper, timer, stream);
     }
     
+    pil2DumpU64Gpu(dumpPrefix + "evals", h_params.evals,
+                   setupCtx.starkInfo.evMap.size() * FIELD_EXTENSION, stream);
+    if (std::getenv("PIL2_DUMP_DIR")) {
+        // Extended committed sections + fixed columns — the DEEP inputs, same
+        // landmark as the CPU pre-FRI block.
+        for (uint64_t st = 2; st <= setupCtx.starkInfo.nStages; st++) {
+            std::string sec = "cm" + std::to_string(st);
+            auto k = std::make_pair(sec, true);
+            if (setupCtx.starkInfo.mapOffsets.count(k) && setupCtx.starkInfo.mapSectionsN.count(sec)) {
+                pil2DumpU64Gpu(dumpPrefix + sec + "_ext",
+                               h_params.aux_trace + setupCtx.starkInfo.mapOffsets[k],
+                               NExtended * setupCtx.starkInfo.mapSectionsN[sec], stream);
+            }
+        }
+        pil2DumpU64Gpu(dumpPrefix + "const_ext", pConstPolsExtendedTreeAddress,
+                       NExtended * setupCtx.starkInfo.nConstants, stream);
+    }
     if(!setupCtx.starkInfo.starkStruct.hashCommits) {
         d_transcript->put(h_params.evals, setupCtx.starkInfo.evMap.size() * FIELD_EXTENSION, stream);
     } else {
@@ -319,7 +405,11 @@ void genProof_gpu(SetupCtx& setupCtx, gl64_t *d_aux_trace, gl64_t *d_const_pols,
     calculateFRIExpression(setupCtx, h_params, air_instance_info, stream);
     TimerStopCategoryGPU(timer, EXPRESSIONS);
     TimerStopGPU(timer, STARK_FRI_POLYNOMIAL);
-    for(uint64_t step = 0; step < setupCtx.starkInfo.starkStruct.steps.size() - 1; ++step) { 
+    pil2DumpU64Gpu(dumpPrefix + "deep_f",
+                   h_params.aux_trace + setupCtx.starkInfo.mapOffsets[std::make_pair("f", true)],
+                   (1ULL << setupCtx.starkInfo.starkStruct.steps[0].nBits) * FIELD_EXTENSION,
+                   stream);
+    for(uint64_t step = 0; step < setupCtx.starkInfo.starkStruct.steps.size() - 1; ++step) {
         Goldilocks::Element *src = h_params.aux_trace + setupCtx.starkInfo.mapOffsets[std::make_pair("fri_" + to_string(step + 1), true)];
         starks.treesFRI[step]->setSource(src);
 
@@ -375,6 +465,10 @@ void genProof_gpu(SetupCtx& setupCtx, gl64_t *d_aux_trace, gl64_t *d_const_pols,
             }
         }
         d_transcript->getField((uint64_t *)d_challenge, stream);
+        pil2DumpU64Gpu(dumpPrefix + "fri_layer" + std::to_string(step), d_friPol,
+                       (1ULL << currentBits) * FIELD_EXTENSION, stream);
+        pil2DumpU64Gpu(dumpPrefix + "fri_beta" + std::to_string(step), d_challenge,
+                       FIELD_EXTENSION, stream);
 
 #ifdef USE_CUDA_GRAPH
         if (cudagraph::aggressive()) {
@@ -474,7 +568,26 @@ void genProof_gpu(SetupCtx& setupCtx, gl64_t *d_aux_trace, gl64_t *d_const_pols,
     TimerStopCategoryGPU(timer, FRI);
     TimerStopGPU(timer, STARK_STEP_FRI);
 
+    if (std::getenv("PIL2_DUMP_DIR")) {
+        pil2DumpU64Gpu(dumpPrefix + "airvalues", h_params.airValues,
+                       setupCtx.starkInfo.airValuesSize, stream);
+        pil2DumpU64Gpu(dumpPrefix + "airgroupvalues", h_params.airgroupValues,
+                       setupCtx.starkInfo.airgroupValuesSize, stream);
+        pil2DumpU64Gpu(dumpPrefix + "proofvalues", h_params.proofValues,
+                       setupCtx.starkInfo.proofValuesSize, stream);
+        pil2DumpU64Gpu(dumpPrefix + "challenges", h_params.challenges,
+                       setupCtx.starkInfo.challengesMap.size() * FIELD_EXTENSION, stream);
+    }
+
     setProof(setupCtx, (Goldilocks::Element *)d_aux_trace, (Goldilocks::Element *)d_const_tree, proof_buffer_pinned, stream);
+    // The flat proof (roots included) settles in the pinned host buffer once
+    // the stream drains — the GPU stand-in for the CPU path's per-stage root
+    // dumps.
+    if (pil2DumpWants(dumpPrefix)) {
+        CHECKCUDAERR(cudaStreamSynchronize(stream));
+        pil2DumpU64(dumpPrefix + "proof", proof_buffer_pinned,
+                    setupCtx.starkInfo.proofSize);
+    }
 
     TimerStopGPU(timer, STARK_GPU_PROOF);
 }

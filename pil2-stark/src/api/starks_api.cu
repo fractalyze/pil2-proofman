@@ -947,7 +947,12 @@ uint64_t gen_recursive_proof_gpu(void *pSetupCtx_, uint64_t airgroupId, uint64_t
         }
     }
 
+    // Recursion reuses the inner (airgroup, air, instance) ids: untagged, a
+    // compressor prove's dumps overwrite its inner instance's files (the CPU
+    // api tags around its genProof call; mirror it here).
+    pil2DumpTag() = std::string(proofType) + "_";
     genProof_gpu(*setupCtx, d_aux_trace, d_const_pols, d_const_tree, constTreePath, streamId, instanceId, d_buffers, air_instance_info, false, timer, stream, true, reuse_constants);
+    pil2DumpTag().clear();
     cudaEventRecord(d_buffers->streamsData[streamId].end_event, stream);
     d_buffers->streamsData[streamId].status = 2;
     return streamId;
