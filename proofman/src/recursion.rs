@@ -887,12 +887,37 @@ pub fn generate_witness_final_snark(proof: *mut c_void, setup_path: &Path) -> Pr
     }
 }
 
+/// The sequence exists because aggregation witnesses all pass instance_id 0.
+fn pil2_dump_zkin<F: PrimeField64>(setup: &Setup<F>, instance_id: usize, zkin: &[u64]) {
+    let Ok(dir) = std::env::var("PIL2_DUMP_DIR") else { return };
+    use std::sync::atomic::{AtomicU64, Ordering};
+    static SEQ: AtomicU64 = AtomicU64::new(0);
+    let seq = SEQ.fetch_add(1, Ordering::Relaxed);
+    let ty = format!("{:?}", setup.setup_type).to_lowercase();
+    let path = format!(
+        "{dir}/zkin_{ty}_ag{}_air{}_i{instance_id}_s{seq}.npy",
+        setup.airgroup_id, setup.air_id
+    );
+    let mut hdr = format!("{{'descr': '<u8', 'fortran_order': False, 'shape': ({},), }}", zkin.len());
+    let pad = (64 - ((10 + hdr.len() + 1) % 64)) % 64;
+    hdr.push_str(&" ".repeat(pad));
+    hdr.push('\n');
+    let Ok(mut f) = File::create(&path) else { return };
+    let _ = f.write_all(b"\x93NUMPY\x01\x00");
+    let _ = f.write_all(&(hdr.len() as u16).to_le_bytes());
+    let _ = f.write_all(hdr.as_bytes());
+    for w in zkin {
+        let _ = f.write_all(&w.to_le_bytes());
+    }
+}
+
 fn generate_witness<F: PrimeField64>(
     setup: &Setup<F>,
     memory_handler_recursive_witness: &MemoryHandlerRecursive<F>,
     instance_id: usize,
     zkin: &[u64],
 ) -> ProofmanResult<Vec<F>> {
+    pil2_dump_zkin(setup, instance_id, zkin);
     let mut witness: Vec<F> = match setup.setup_type {
         ProofType::Compressor => memory_handler_recursive_witness.take_buffer_witness_compressor(),
         _ => memory_handler_recursive_witness.take_buffer_witness(),
