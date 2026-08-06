@@ -375,6 +375,14 @@ void genProof_gpu(SetupCtx& setupCtx, gl64_t *d_aux_trace, gl64_t *d_const_pols,
         }
         pil2DumpU64Gpu(dumpPrefix + "const_ext", pConstPolsExtendedTreeAddress,
                        NExtended * setupCtx.starkInfo.nConstants, stream);
+        for (uint64_t i = 0; i < setupCtx.starkInfo.customCommits.size(); i++) {
+            std::string sec = setupCtx.starkInfo.customCommits[i].name + "0";
+            if (setupCtx.starkInfo.mapSectionsN.count(sec)) {
+                uint64_t nCols = setupCtx.starkInfo.mapSectionsN[sec];
+                pil2DumpU64Gpu(dumpPrefix + "custom" + std::to_string(i) + "_ext",
+                               &pCustomCommitsFixed[N * nCols], NExtended * nCols, stream);
+            }
+        }
     }
     if(!setupCtx.starkInfo.starkStruct.hashCommits) {
         d_transcript->put(h_params.evals, setupCtx.starkInfo.evMap.size() * FIELD_EXTENSION, stream);

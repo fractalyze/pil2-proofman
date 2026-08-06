@@ -16,12 +16,16 @@
 
 #include "pil2_dump.hpp"
 
-// PIL2_DUMP_ONLY: optional dump-name substring filter. A GPU prove's raw dump
-// set is dominated by per-instance extended sections (a small guest already
-// produces ~22 GB across its instances), so a block-scale capture targets one
-// air, e.g. PIL2_DUMP_ONLY=ag0_air0_ for every Main segment.
+// PIL2_DUMP_ONLY / PIL2_DUMP_SKIP: optional dump-name substring filters
+// (keep-if-match / drop-if-match; SKIP wins). A GPU prove's raw dump set is
+// dominated by per-instance extended sections (a small guest already produces
+// ~22 GB across its instances), so a block-scale capture targets one air with
+// PIL2_DUMP_ONLY=ag0_air0_, or everything BUT an already-captured air with
+// PIL2_DUMP_SKIP=ag0_air0_.
 inline bool pil2DumpWants(const std::string& name) {
     if (!std::getenv("PIL2_DUMP_DIR")) return false;
+    const char* skip = std::getenv("PIL2_DUMP_SKIP");
+    if (skip && name.find(skip) != std::string::npos) return false;
     const char* only = std::getenv("PIL2_DUMP_ONLY");
     return !only || name.find(only) != std::string::npos;
 }
