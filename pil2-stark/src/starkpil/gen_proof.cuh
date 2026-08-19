@@ -591,7 +591,7 @@ void genProof_gpu(SetupCtx& setupCtx, gl64_t *d_aux_trace, gl64_t *d_const_pols,
     // The flat proof (roots included) settles in the pinned host buffer once
     // the stream drains — the GPU stand-in for the CPU path's per-stage root
     // dumps.
-    if (pil2DumpWants(dumpPrefix)) {
+    if (pil2DumpWants(dumpPrefix + "proof")) {
         CHECKCUDAERR(cudaStreamSynchronize(stream));
         pil2DumpU64(dumpPrefix + "proof", proof_buffer_pinned,
                     setupCtx.starkInfo.proofSize);
