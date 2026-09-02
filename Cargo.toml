@@ -115,6 +115,3 @@ anyhow = "1"
 # this workspace's copy so proofman and the bridge share one crate.
 [patch."https://github.com/0xPolygonHermez/pil2-proofman.git"]
 fields = { path = "fields" }
-
-[patch."https://github.com/fractalyze/xla-pjrt"]
-xla-pjrt = { path = "/home/baz/Workspace/xla-pjrt" }
