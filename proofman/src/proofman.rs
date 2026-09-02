@@ -2044,7 +2044,21 @@ where
 
             Self::set_publics_custom_commits(&self.sctx, &self.pctx)?;
 
-            timer_start_info!(CALCULATING_CONTRIBUTIONS);
+            // The zisk-zorch bridge loads each AIR's programs while the witnesses
+        // and contributions are still being computed.
+        if let Some(bridge) = zisk_zorch_bridge::Bridge::global(0) {
+            let mut keys: Vec<String> = Vec::new();
+            for inst in self.pctx.dctx_get_instances().iter() {
+                if let Ok(setup) = self.sctx.get_setup(inst.airgroup_id, inst.air_id) {
+                    let k = format!("{}_n{}", setup.air_name, setup.stark_info.stark_struct.n_bits);
+                    if !keys.contains(&k) {
+                        keys.push(k);
+                    }
+                }
+            }
+            bridge.preload_with(keys, true);
+        }
+        timer_start_info!(CALCULATING_CONTRIBUTIONS);
             timer_start_debug!(CALCULATING_INNER_CONTRIBUTIONS);
             timer_start_debug!(PREPARING_CONTRIBUTIONS);
 
@@ -3978,7 +3992,7 @@ where
 
     #[allow(clippy::too_many_arguments)]
     fn gen_proof(
-        proofs: &[RwLock<Option<Proof<F>>>],
+        proofs: &Arc<Vec<RwLock<Option<Proof<F>>>>>,
         pctx: &ProofCtx<F>,
         sctx: &SetupCtx<F>,
         instance_id: usize,
@@ -4062,14 +4076,31 @@ where
                 instance_id: instance_id as u64,
                 packed: packed.as_ref().map(|(w, bits)| (*w, bits.as_slice())),
             };
-            let mut ours = vec![0u64; setup.proof_size as usize];
-            unsafe { bridge.prove(&req, &mut ours) }
-                .map_err(|e| ProofmanError::InvalidParameters(format!("zisk-zorch bridge: {e}")))?;
             if zisk_zorch_bridge::ab::enabled() {
+                let mut ours = vec![0u64; setup.proof_size as usize];
+                unsafe { bridge.prove(&req, &mut ours) }
+                    .map_err(|e| ProofmanError::InvalidParameters(format!("zisk-zorch bridge: {e}")))?;
                 zisk_zorch_bridge::ab::record(instance_id, ours);
             } else {
-                proofs[instance_id].write().unwrap().as_mut().unwrap().proof = ours;
-                launch_callback_c(instance_id as u64, "basic");
+                // Asynchronous like pil2's own GPU path: the instance is copied
+                // out now (proofman frees it when this returns) and proved on a
+                // bridge thread, which fires the completion callback.
+                let owned = unsafe { bridge.take(&req) }
+                    .map_err(|e| ProofmanError::InvalidParameters(format!("zisk-zorch bridge: {e}")))?;
+                let proofs = proofs.clone();
+                bridge.prove_async(
+                    owned,
+                    Box::new(move |result| match result {
+                        Ok((proof, _)) => {
+                            proofs[instance_id].write().unwrap().as_mut().unwrap().proof = proof;
+                            launch_callback_c(instance_id as u64, "basic");
+                        }
+                        Err(e) => {
+                            tracing::error!("zisk-zorch bridge: instance {instance_id}: {e}");
+                            std::process::abort();
+                        }
+                    }),
+                );
                 timer_stop_and_log_debug!(GEN_PROOF, "GEN_PROOF_{} [{}:{}]", instance_id, airgroup_id, air_id);
                 return Ok(());
             }
