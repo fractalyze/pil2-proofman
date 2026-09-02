@@ -1714,6 +1714,12 @@ where
             RankInfo { world_rank: mpi_ctx.rank, local_rank: mpi_ctx.node_rank, n_processes: mpi_ctx.n_processes };
         initialize_logger(options.verbose_mode, Some(&rank_info));
 
+        // The zisk-zorch bridge, before initialize_proofman sizes pil2's stream
+        // buffers from the GPU memory left free: with ZZ_MEMORY_FRACTION the
+        // bridge's clients claim their share first. Three clients unless
+        // ZZ_CLIENTS says otherwise (the streams-per-GPU basis is not known yet).
+        zisk_zorch_bridge::Bridge::global(3);
+
         let (pctx, sctx, setups_vadcop, n_streams_per_gpu, n_recursive_streams_per_gpu, n_gpus) =
             Self::initialize_proofman(mpi_ctx.clone(), proving_key_path, &options)?;
 
@@ -2435,7 +2441,16 @@ where
         });
 
         let proofs_finished = Arc::new(AtomicBool::new(false));
-        for stream_id in 0..self.n_streams {
+        // With the zisk-zorch bridge on, basic proofs run on its clients, so
+        // the worker count follows the bridge rather than pil2's streams;
+        // the extra workers are plain basic-proof workers (never forced onto
+        // the recursive streams).
+        let n_workers = match zisk_zorch_bridge::Bridge::global(0) {
+            Some(bridge) => self.n_streams.max(bridge.clients()),
+            None => self.n_streams,
+        };
+        let n_streams_total = self.n_streams;
+        for stream_id in 0..n_workers {
             let pctx_clone = self.pctx.clone();
             let sctx_clone = self.sctx.clone();
             let setups_clone = self.setups.clone();
@@ -2456,7 +2471,8 @@ where
             let proofs_finished_clone = proofs_finished.clone();
             let cancellation_info_clone = self.cancellation_info.clone();
             let handle_recursive = std::thread::spawn(move || loop {
-                let force_recursive_stream = stream_id >= n_streams_non_recursive;
+                let force_recursive_stream =
+                    stream_id >= n_streams_non_recursive && stream_id < n_streams_total;
                 if !force_recursive_stream {
                     if let Ok(instance_id) = proofs_rx.try_recv() {
                         if cancellation_info_clone.read().unwrap().token.is_cancelled() {
@@ -2523,7 +2539,8 @@ where
                     Some(w) => w,
                 };
 
-                let force_recursive_stream = stream_id >= n_streams_non_recursive;
+                let force_recursive_stream =
+                    stream_id >= n_streams_non_recursive && stream_id < n_streams_total;
                 if witness.proof_type == ProofType::Recursive2 {
                     let id = {
                         let mut rec2_proofs = recursive2_proofs_ongoing_clone.write().unwrap();
@@ -2687,6 +2704,23 @@ where
         );
         get_stream_proofs_c(self.pctx.get_device_buffers_ptr());
         proofs_finished.store(true, Ordering::Relaxed);
+        if zisk_zorch_bridge::ab::enabled() {
+            let report = zisk_zorch_bridge::ab::compare(|id| {
+                self.proofs.get(id).and_then(|p| p.read().unwrap().as_ref().map(|p| p.proof.clone()))
+            });
+            tracing::info!(
+                "zisk-zorch A/B: {} basic proofs byte-identical, {} mismatched, {} missing",
+                report.identical,
+                report.mismatched.len(),
+                report.missing.len()
+            );
+            for (id, words, first) in &report.mismatched {
+                tracing::error!("zisk-zorch A/B: instance {id}: {words} words differ, first at {first}");
+            }
+            if !report.mismatched.is_empty() || !report.missing.is_empty() {
+                panic!("zisk-zorch A/B byte-gate failed");
+            }
+        }
         clear_proof_done_callback_c();
         for _ in 0..self.n_streams {
             self.recursive_tx.send((u64::MAX - 1, "Basic".to_string())).unwrap();
@@ -3976,6 +4010,41 @@ where
         let proof = vec![0; setup.proof_size as usize];
         *proofs[instance_id].write().unwrap() =
             Some(Proof::new(ProofType::Basic, airgroup_id, air_id, Some(instance_id), proof));
+
+        // zisk-zorch bridge: with ZZ_ARTIFACTS set the basic proof comes from the
+        // exported artifacts instead of gen_proof_c. The host trace and scalar
+        // sections are valid until this returns (the instance is freed after),
+        // and the proof is synchronous, so the completion callback fires here.
+        // Under ZZ_AB pil2 still proves and the bridge's proof is kept aside for
+        // the byte comparison once the basic phase has collected every proof.
+        if let Some(bridge) = zisk_zorch_bridge::Bridge::global(0) {
+            let req = zisk_zorch_bridge::ProveRequest {
+                air: &setup.air_name,
+                n_bits: setup.stark_info.stark_struct.n_bits as u32,
+                const_pols_path: const_pols_path.as_str(),
+                custom_fixed_path: Some(custom_commits_fixed_path.as_str()),
+                inputs: zisk_zorch_bridge::InputPtrs {
+                    trace: steps_params.trace as *const u64,
+                    publics: steps_params.public_inputs as *const u64,
+                    airvalues: steps_params.airvalues as *const u64,
+                    proofvalues: steps_params.proof_values as *const u64,
+                    global_challenge: pctx.get_global_challenge_ptr() as *const u64,
+                },
+                stream_id: stream_id_,
+                instance_id: instance_id as u64,
+            };
+            let mut ours = vec![0u64; setup.proof_size as usize];
+            unsafe { bridge.prove(&req, &mut ours) }
+                .map_err(|e| ProofmanError::InvalidParameters(format!("zisk-zorch bridge: {e}")))?;
+            if zisk_zorch_bridge::ab::enabled() {
+                zisk_zorch_bridge::ab::record(instance_id, ours);
+            } else {
+                proofs[instance_id].write().unwrap().as_mut().unwrap().proof = ours;
+                launch_callback_c(instance_id as u64, "basic");
+                timer_stop_and_log_debug!(GEN_PROOF, "GEN_PROOF_{} [{}:{}]", instance_id, airgroup_id, air_id);
+                return Ok(());
+            }
+        }
 
         gen_proof_c(
             p_setup,

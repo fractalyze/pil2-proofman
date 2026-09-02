@@ -13,6 +13,8 @@ proofman-macros = { path = "../macros" }
 proofman-hints = { path = "../hints" }
 proofman-util = { path = "../util" }
 proofman-starks-lib-c = { path = "../provers/starks-lib-c" }
+# zisk-zorch's gen_proof over exported StableHLO artifacts (ZZ_ARTIFACTS).
+zisk-zorch-bridge = { path = "/home/baz/Workspace/zisk-zorch.worktrees/agent1/bridge" }
 proofman-verifier = { path = "../verifier", features = ["parallel"] }
 curves = { path = "../curves" }
 witness = { path = "../witness" }

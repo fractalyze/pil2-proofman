@@ -110,3 +110,11 @@ itoa = "1.0.17"
 thiserror = { version = "2" }
 rand = "0.10"
 anyhow = "1"
+
+# The zisk-zorch bridge names `fields` by the upstream git tag; resolve it to
+# this workspace's copy so proofman and the bridge share one crate.
+[patch."https://github.com/0xPolygonHermez/pil2-proofman.git"]
+fields = { path = "fields" }
+
+[patch."https://github.com/fractalyze/xla-pjrt"]
+xla-pjrt = { path = "/home/baz/Workspace/xla-pjrt" }
