@@ -374,15 +374,20 @@ $(BUILD_DIR_GPU)/%.cc.o: %.cc
 $(BUILD_DIR)/$(TARGET_BINFILE): $(OBJS_BINFILE)
 	$(CXX) $(OBJS_BINFILE) $(CXXFLAGS) -o $(BUILD_DIR)/$(TARGET_BIN_FILE) $(LDFLAGS) $(LDFLAGS_EXT) $(CFLAGS) $(CPPFLAGS) $(CXXFLAGS) 
 
+# nvcc does not accept -pthread, which OpenMPI's `mpicc --showme:compile`
+# adds to CPPFLAGS on Linux (MPICH has no --showme, so the flags stay empty
+# there and the problem never shows). Host compiles keep the full set.
+NVCC_CPPFLAGS := $(filter-out -pthread,$(CPPFLAGS))
+
 # cuda source
 $(BUILD_DIR_GPU)/%.cu.o: %.cu
 	$(MKDIR_P) $(dir $@)
-	$(NVCC) -D__USE_CUDA__ $(NVCCFLAGS) $(CPPFLAGS) -c $< -o $@
+	$(NVCC) -D__USE_CUDA__ $(NVCCFLAGS) $(NVCC_CPPFLAGS) -c $< -o $@
 
 # sppark utility (compile as CUDA to get proper GPU support)
 $(SPPARK_GPU_OBJ): ./external/sppark/util/all_gpus.cpp
 	$(MKDIR_P) $(dir $@)
-	$(NVCC) -D__USE_CUDA__ $(NVCCFLAGS) $(CPPFLAGS) -x cu -c $< -o $@
+	$(NVCC) -D__USE_CUDA__ $(NVCCFLAGS) $(NVCC_CPPFLAGS) -x cu -c $< -o $@
 
 .PHONY: clean clean_cpu clean_gpu
 
