@@ -934,6 +934,16 @@ impl<F: PrimeField64> ProofCtx<F> {
         };
 
         free_memory_gpu /= n_partitions as f64;
+        // ZZ_GPU_HEADROOM_GB (zisk-zorch bridge): the streams are sized from
+        // what is free, so a co-tenant's later needs outside its own pool
+        // (CUDA module loads, a second runtime's context) have to be set
+        // aside here or the card ends up fully committed.
+        if let Some(headroom) =
+            std::env::var("ZZ_GPU_HEADROOM_GB").ok().and_then(|v| v.parse::<f64>().ok())
+        {
+            free_memory_gpu -= headroom * 1024.0 * 1024.0 * 1024.0;
+            tracing::info!("zisk-zorch: keeping {headroom} GB of GPU memory out of the stream sizing");
+        }
 
         let mut total_const_area = 0;
         let mut total_const_area_aggregation = 0;

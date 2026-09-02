@@ -122,12 +122,15 @@ dependencies = [
  "itertools 0.12.1",
  "lazy_static",
  "lazycell",
+ "log",
+ "prettyplease",
  "proc-macro2",
  "quote",
  "regex",
  "rustc-hash 1.1.0",
  "shlex 1.3.0",
  "syn 2.0.118",
+ "which 4.4.2",
 ]
 
 [[package]]
@@ -1391,7 +1394,7 @@ dependencies = [
  "tempfile",
  "tracing",
  "tracing-subscriber",
- "which",
+ "which 6.0.3",
 ]
 
 [[package]]
@@ -1484,6 +1487,7 @@ dependencies = [
  "tokio-util",
  "tracing",
  "witness",
+ "zisk-zorch-bridge",
 ]
 
 [[package]]
@@ -2519,6 +2523,18 @@ dependencies = [
 
 [[package]]
 name = "which"
+version = "4.4.2"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "87ba24419a2078cd2b0f2ede2691b6c66d8e47836da3b6db8265ebad47afbfc7"
+dependencies = [
+ "either",
+ "home",
+ "once_cell",
+ "rustix 0.38.44",
+]
+
+[[package]]
+name = "which"
 version = "6.0.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "b4ee928febd44d98f2f459a4a79bd4d928591333a494a10a868418ac1b39cf1f"
@@ -2825,6 +2841,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "xla-pjrt"
+version = "0.1.0"
+dependencies = [
+ "bindgen",
+ "libloading",
+]
+
+[[package]]
 name = "yansi"
 version = "1.0.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2848,6 +2872,16 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.118",
+]
+
+[[package]]
+name = "zisk-zorch-bridge"
+version = "0.1.0"
+dependencies = [
+ "fields",
+ "serde",
+ "serde_json",
+ "xla-pjrt",
 ]
 
 [[package]]

@@ -1719,6 +1719,14 @@ where
         // bridge's clients claim their share first. Three clients unless
         // ZZ_CLIENTS says otherwise (the streams-per-GPU basis is not known yet).
         zisk_zorch_bridge::Bridge::global(3);
+        zisk_zorch_bridge::set_packed_info(
+            options
+                .packed_info
+                .iter()
+                .filter(|(_, p)| p.is_packed)
+                .map(|(k, p)| (*k, (p.num_packed_words as usize, p.unpack_info.clone())))
+                .collect(),
+        );
 
         let (pctx, sctx, setups_vadcop, n_streams_per_gpu, n_recursive_streams_per_gpu, n_gpus) =
             Self::initialize_proofman(mpi_ctx.clone(), proving_key_path, &options)?;
@@ -2353,6 +2361,13 @@ where
                         }
                     } else {
                         let proof = proofs_clone[id as usize].write().unwrap().take().unwrap();
+                        if zisk_zorch_bridge::ab::enabled() {
+                            zisk_zorch_bridge::ab::check(id as usize, &proof.proof);
+                        }
+                        // ZZ_DUMP_PROOFS=<dir>: every basic proof as raw words, so a
+                        // native run and a bridge run of the same guest can be
+                        // compared word for word without sharing a process.
+                        zisk_zorch_bridge::ab::dump(id as usize, &proof.proof);
                         let w = gen_witness_recursive(
                             &pctx_clone,
                             &memory_handler_recursive_witness,
@@ -4017,7 +4032,20 @@ where
         // and the proof is synchronous, so the completion callback fires here.
         // Under ZZ_AB pil2 still proves and the bridge's proof is kept aside for
         // the byte comparison once the basic phase has collected every proof.
+        // ZZ_DUMP_TRACES=<dir>: the host trace as gen_proof receives it, from
+        // either prover, so a native run and a bridge run can be compared.
+        if let Ok(dir) = std::env::var("ZZ_DUMP_TRACES") {
+            if !dir.is_empty() {
+                let n = 1usize << setup.stark_info.stark_struct.n_bits;
+                let n_cols = *setup.stark_info.map_sections_n.get("cm1").unwrap_or(&0) as usize;
+                let words = unsafe { std::slice::from_raw_parts(steps_params.trace as *const u64, n * n_cols) };
+                let bytes: Vec<u8> = words.iter().flat_map(|w| w.to_le_bytes()).collect();
+                let _ = std::fs::create_dir_all(&dir);
+                let _ = std::fs::write(format!("{dir}/{instance_id}_{}.trace.bin", setup.air_name), bytes);
+            }
+        }
         if let Some(bridge) = zisk_zorch_bridge::Bridge::global(0) {
+            let packed = zisk_zorch_bridge::packed_info_for(airgroup_id, air_id);
             let req = zisk_zorch_bridge::ProveRequest {
                 air: &setup.air_name,
                 n_bits: setup.stark_info.stark_struct.n_bits as u32,
@@ -4032,6 +4060,7 @@ where
                 },
                 stream_id: stream_id_,
                 instance_id: instance_id as u64,
+                packed: packed.as_ref().map(|(w, bits)| (*w, bits.as_slice())),
             };
             let mut ours = vec![0u64; setup.proof_size as usize];
             unsafe { bridge.prove(&req, &mut ours) }
