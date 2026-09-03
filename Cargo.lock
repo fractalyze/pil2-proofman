@@ -2878,7 +2878,7 @@ dependencies = [
 [[package]]
 name = "zisk-zorch-bridge"
 version = "0.1.0"
-source = "git+https://github.com/fractalyze/zisk-zorch.git?rev=12de3d0#12de3d08f120f1da5dc20eb848f48c760132814e"
+source = "git+https://github.com/fractalyze/zisk-zorch.git?rev=94a99f1#94a99f1d9c78eb2841d0910bde8a55935959f67b"
 dependencies = [
  "fields",
  "serde",
