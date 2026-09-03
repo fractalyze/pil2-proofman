@@ -14,7 +14,7 @@ proofman-hints = { path = "../hints" }
 proofman-util = { path = "../util" }
 proofman-starks-lib-c = { path = "../provers/starks-lib-c" }
 # zisk-zorch's gen_proof over exported StableHLO artifacts (ZZ_ARTIFACTS).
-zisk-zorch-bridge = { git = "https://github.com/fractalyze/zisk-zorch.git", rev = "6c42083" }
+zisk-zorch-bridge = { git = "https://github.com/fractalyze/zisk-zorch.git", rev = "c5f7813" }
 proofman-verifier = { path = "../verifier", features = ["parallel"] }
 curves = { path = "../curves" }
 witness = { path = "../witness" }
