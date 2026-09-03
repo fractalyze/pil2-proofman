@@ -4092,7 +4092,22 @@ where
                     owned,
                     Box::new(move |result| match result {
                         Ok((proof, _)) => {
-                            proofs[instance_id].write().unwrap().as_mut().unwrap().proof = proof;
+                            let mut slot = proofs[instance_id].write().unwrap();
+                            let slot = slot.as_mut().unwrap();
+                            // The bridge sizes the proof from its manifest; the
+                            // slot was sized from this key's proof_size. A stale
+                            // export must not hand the aggregation a wrong-sized
+                            // buffer (the recursion reads it by the .dat's count).
+                            if proof.len() != slot.proof.len() {
+                                tracing::error!(
+                                    "zisk-zorch bridge: instance {instance_id}: proof is {} words, the key says {}",
+                                    proof.len(),
+                                    slot.proof.len()
+                                );
+                                std::process::abort();
+                            }
+                            slot.proof = proof;
+                            drop(slot);
                             launch_callback_c(instance_id as u64, "basic");
                         }
                         Err(e) => {
