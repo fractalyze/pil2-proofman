@@ -2425,7 +2425,7 @@ where
                 return;
             }
             proofs_pending.increment();
-            if let Err(e) = Self::gen_proof(
+            let deferred = match Self::gen_proof(
                 &self.proofs,
                 &self.pctx,
                 &self.sctx,
@@ -2434,14 +2434,21 @@ where
                 &self.const_pols,
                 &self.const_tree,
                 Some(stream_id),
+                Some((self.pctx.clone(), self.memory_handler.clone())),
             ) {
-                self.cancellation_info.write().unwrap().cancel(Some(e));
-            }
-
-            let (is_shared_buffer, witness_buffer) = self.pctx.free_instance(*instance_id as usize);
-            if is_shared_buffer {
-                if let Err(e) = self.memory_handler.release_buffer(witness_buffer) {
+                Ok(deferred) => deferred,
+                Err(e) => {
                     self.cancellation_info.write().unwrap().cancel(Some(e));
+                    false
+                }
+            };
+
+            if !deferred {
+                let (is_shared_buffer, witness_buffer) = self.pctx.free_instance(*instance_id as usize);
+                if is_shared_buffer {
+                    if let Err(e) = self.memory_handler.release_buffer(witness_buffer) {
+                        self.cancellation_info.write().unwrap().cancel(Some(e));
+                    }
                 }
             }
         });
@@ -2514,7 +2521,7 @@ where
                             }
                             continue;
                         } else {
-                            if let Err(e) = Self::gen_proof(
+                            let deferred = match Self::gen_proof(
                                 &proofs_clone,
                                 &pctx_clone,
                                 &sctx_clone,
@@ -2523,15 +2530,21 @@ where
                                 &const_pols_clone,
                                 &const_tree_clone,
                                 None,
+                                Some((pctx_clone.clone(), memory_handler_clone.clone())),
                             ) {
-                                cancellation_info_clone.write().unwrap().cancel(Some(e));
-                                break;
-                            }
-                            let (is_shared_buffer, witness_buffer) = pctx_clone.free_instance(instance_id);
-                            if is_shared_buffer {
-                                if let Err(e) = memory_handler_clone.release_buffer(witness_buffer) {
+                                Ok(deferred) => deferred,
+                                Err(e) => {
                                     cancellation_info_clone.write().unwrap().cancel(Some(e));
-                                    return;
+                                    break;
+                                }
+                            };
+                            if !deferred {
+                                let (is_shared_buffer, witness_buffer) = pctx_clone.free_instance(instance_id);
+                                if is_shared_buffer {
+                                    if let Err(e) = memory_handler_clone.release_buffer(witness_buffer) {
+                                        cancellation_info_clone.write().unwrap().cancel(Some(e));
+                                        return;
+                                    }
                                 }
                             }
                             continue;
@@ -4000,7 +4013,11 @@ where
         const_pols: &[F],
         const_tree: &[F],
         stream_id_: Option<usize>,
-    ) -> ProofmanResult<()> {
+        // With the zisk-zorch bridge on, the instance's buffer stays with
+        // proofman's pool until the bridge's completion callback releases
+        // it through these; `Ok(true)` tells the caller not to free it.
+        deferred_release: Option<(Arc<ProofCtx<F>>, Arc<MemoryHandler<F>>)>,
+    ) -> ProofmanResult<bool> {
         let (airgroup_id, air_id) = pctx.dctx_get_instance_info(instance_id)?;
         timer_start_debug!(GEN_PROOF, "GEN_PROOF_{} [{}:{}]", instance_id, airgroup_id, air_id);
         Self::initialize_air_instance(pctx, sctx, instance_id, false, false, None, None)?;
@@ -4088,6 +4105,12 @@ where
                 let owned = unsafe { bridge.take(&req) }
                     .map_err(|e| ProofmanError::InvalidParameters(format!("zisk-zorch bridge: {e}")))?;
                 let proofs = proofs.clone();
+                // The instance's trace buffer goes back to proofman's pool
+                // only when its proof is in, so witness generation blocks
+                // on the pool as it does natively, and this worker never
+                // waits on the bridge (it also proves the recursion, whose
+                // witnesses need this worker to free their buffers).
+                let release = deferred_release.clone();
                 bridge.prove_async(
                     owned,
                     Box::new(move |result| match result {
@@ -4108,6 +4131,15 @@ where
                             }
                             slot.proof = proof;
                             drop(slot);
+                            if let Some((pctx, memory_handler)) = &release {
+                                let (is_shared_buffer, witness_buffer) = pctx.free_instance(instance_id);
+                                if is_shared_buffer {
+                                    if let Err(e) = memory_handler.release_buffer(witness_buffer) {
+                                        tracing::error!("zisk-zorch bridge: instance {instance_id}: {e}");
+                                        std::process::abort();
+                                    }
+                                }
+                            }
                             launch_callback_c(instance_id as u64, "basic");
                         }
                         Err(e) => {
@@ -4117,7 +4149,7 @@ where
                     }),
                 );
                 timer_stop_and_log_debug!(GEN_PROOF, "GEN_PROOF_{} [{}:{}]", instance_id, airgroup_id, air_id);
-                return Ok(());
+                return Ok(deferred_release.is_some());
             }
         }
 
@@ -4143,7 +4175,7 @@ where
         }
 
         timer_stop_and_log_debug!(GEN_PROOF, "GEN_PROOF_{} [{}:{}]", instance_id, airgroup_id, air_id);
-        Ok(())
+        Ok(false)
     }
 
     #[allow(clippy::type_complexity)]
