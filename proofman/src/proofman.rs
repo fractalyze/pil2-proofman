@@ -2045,20 +2045,25 @@ where
             Self::set_publics_custom_commits(&self.sctx, &self.pctx)?;
 
             // The zisk-zorch bridge loads each AIR's programs while the witnesses
-        // and contributions are still being computed.
-        if let Some(bridge) = zisk_zorch_bridge::Bridge::global(0) {
-            let mut keys: Vec<String> = Vec::new();
-            for inst in self.pctx.dctx_get_instances().iter() {
-                if let Ok(setup) = self.sctx.get_setup(inst.airgroup_id, inst.air_id) {
-                    let k = format!("{}_n{}", setup.air_name, setup.stark_info.stark_struct.n_bits);
-                    if !keys.contains(&k) {
-                        keys.push(k);
+            // and contributions are still being computed. The list goes over with
+            // one entry per instance rather than one per AIR: the bridge takes the
+            // AIRs to load from it, and the per-AIR instance count, which is what
+            // says whether an AIR's fixed sections are worth keeping on the card
+            // past the prove that uploads them.
+            //
+            // `dctx_get_instances` rather than this rank's own share: an AIR split
+            // across ranks is then counted at its full multiplicity and keeps its
+            // sections on every rank, which is the conservative direction.
+            if let Some(bridge) = zisk_zorch_bridge::Bridge::global(0) {
+                let mut keys: Vec<String> = Vec::new();
+                for inst in self.pctx.dctx_get_instances().iter() {
+                    if let Ok(setup) = self.sctx.get_setup(inst.airgroup_id, inst.air_id) {
+                        keys.push(format!("{}_n{}", setup.air_name, setup.stark_info.stark_struct.n_bits));
                     }
                 }
+                bridge.set_plan(keys);
             }
-            bridge.preload_with(keys, true);
-        }
-        timer_start_info!(CALCULATING_CONTRIBUTIONS);
+            timer_start_info!(CALCULATING_CONTRIBUTIONS);
             timer_start_debug!(CALCULATING_INNER_CONTRIBUTIONS);
             timer_start_debug!(PREPARING_CONTRIBUTIONS);
 
